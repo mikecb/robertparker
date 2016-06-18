@@ -1,10 +1,10 @@
 robertparker grades domains. Get it? Like Domaine like the wine producer. And he grades wines. Yes.
 
-It performs only a bit of analysis at the moment, including shannon entropy scores on single domains and levenschtein distance between a set of domains.
+It performs only a bit of analysis at the moment, including shannon entropy scores on single domains and levenshtein distance between a set of domains.
 I wrote it because I did not find a good library that performed these simple functions that: 1. understood internationalized domain names like pure unicode or punycode domains, and 2. understood the difference in control between public TLDs like .com, and their secondary and tertiary domains, and private TLDs like appspot.com and other platforms. THis distinction is important when computing these sort of scores as an input to systems which are trying to determine the control of a given FQDN.
 
 Usage:
-
+```
 import "github.com/mikecb/robertparker"
 
 func main() {
@@ -15,7 +15,7 @@ func main() {
 		fmt.Printf("Domain: %s\n%+v\nEntropy: %v\n\n", domain, dom, doment)
 	}
 }
-
+```
 etc.
 
 Plans:

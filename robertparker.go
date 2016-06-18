@@ -11,13 +11,13 @@ import (
 
 //Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
 type Domain struct {
-	Suffix    string   //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
+	Suffix    string   //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count are a public suffix for these purposes.
 	Secondary string   //The eTLD+1, e.g.: google.com
 	Tertiary  []string //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
-	ICANN     bool     //If a domain is controlled by ICANN, in which case we can ignore it from analysis.
+	ICANN     bool     //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
 }
 
-//SplitDomain splits a string reprisenting a domain into a struct of its pats.
+//SplitDomain splits a string reprisenting a domain into a struct of its parts.
 func SplitDomain(s string) Domain {
 	var d Domain
 	puny, _ := idna.ToASCII(s)
