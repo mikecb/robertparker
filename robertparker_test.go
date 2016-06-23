@@ -33,8 +33,9 @@ func ExampleSplitDomain() {
 
 func ExampleLevenshtein() {
 	d := robertparker.Levenshtein("δοκιμή.δοκιμή", "δδοκιμή.δοκιμή")
-	fmt.Printf("%v", d)
-	//Output: 2
+	e := robertparker.Levenshtein("δοκιμή.δοκιμή", "δοκιμή.δοκιμή")
+	fmt.Printf("%v %v", d, e)
+	//Output: 2 0
 }
 
 func ExampleEntropy() {
