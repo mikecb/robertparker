@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-//Entropy calculates the entropy of a given secondary or tertiary domain.
+// shannon calculates the shannon entropy of a given string.
 func shannon(d string) float64 {
 	frequency := make(map[rune]int)
 	t := 0
@@ -29,10 +29,17 @@ func shannon(d string) float64 {
 	return entropy * -1
 }
 
-//Entropy calculates the shannon entropy of a domain.
+// Entropy calculates the shannon entropy of a domain.
 func Entropy(d Domain) float64 {
-	//If ICANN = true, use Secondary and Tertiary, else use only tertiaries.
+	//If ICANN = true, uses second-level as well as subdomains, if false, uses only subdomains.
 	var domainString string
-	domainString = d.Secondary + strings.Join(d.Tertiary, "")
+
+	if d.ICANN == true {
+		domainString = d.Secondary + strings.Join(d.Tertiary, "")
+
+	} else {
+		domainString = strings.Join(d.Tertiary, "")
+	}
+
 	return shannon(domainString)
 }
