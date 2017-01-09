@@ -1,7 +1,7 @@
-robertparker grades domains. Get it? Like Domaine like the wine producer. And he grades wines. Yes.
+robertparker grades domains. Get it? Like Domaine where wine is made. And he grades them...
 
-It performs only a bit of analysis at the moment, including shannon entropy scores on single domains and levenshtein distance between a set of domains.
-I wrote it because I did not find a good library that performed these simple functions that: 1. understood internationalized domain names like pure unicode or punycode domains, and 2. understood the difference in control between public TLDs like .com, and their secondary and tertiary domains, and private TLDs like appspot.com and other platforms. THis distinction is important when computing these sort of scores as an input to systems which are trying to determine the control of a given FQDN.
+It performs only a bit of analysis at the moment, including Shannon entropy score on single domains and Levenshtein distance between a set of domains.
+I wrote it because I did not find a good library that performed these simple functions that: 1. understands internationalized domain names like pure unicode or punycode domains, and 2. understands the difference in control between public TLDs like .com, and their secondary and tertiary levels, and private platforms like appspot.com where control rests in the third level and below
 
 Usage:
 ```
@@ -16,8 +16,29 @@ func main() {
 	}
 }
 ```
-etc.
 
-Plans:
+Future plans:
 
-cli utility functionality, ability to read from/to files as well as std in, daemonize as a microservice and read write output in json. Better tests. Other metrics and comparison functions. Similarity generation and lookup like dnstwist. Better use of golang concurrency patterns when processing large numbers of domains, etc...
+Functionality:
+Better use of golang concurrency patterns when processing large numbers of domains.
+Built-in cli.
+GRPC-based microservice.
+
+Domain:
+Similarity generation and lookup like dnstwist.
+
+Abuse:
+Check safebrowsing and virustotal links for the domain and subdomains, and return any hits.
+
+DNS:
+Check DNS, return all found records.
+
+Email:
+Check email security related DNS records for best practices.
+Check mail servers for inclusion on spam/blacklists.
+
+Web
+Request endpoints and check for best practices.
+
+TLS
+Analyze web request for TLS best practices, like SSL Labs.

@@ -7,9 +7,9 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-//robertparker grades domains. Get it? Like Domaine like the wine producer. And he grades wines. Yes.
+// robertparker grades domains. Get it? Like Domaine like the wine producer. And he grades wines. Yes.
 
-//Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
+// Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
 type Domain struct {
 	FQDN         string   `json:",omitempty"` //Fully Qualified Domain Name
 	Suffix       string   `json:",omitempty"` //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
@@ -20,8 +20,8 @@ type Domain struct {
 	Permutations []string `json:",omitempty"` //A slice of permutations on the fqdn, for testing for phishing, domain squatting, etc.
 }
 
-//SplitDomain splits a string reprisenting a domain into a struct of its parts.
-func SplitDomain(s string) *Domain {
+// NewDomain splits a string reprisenting a domain into a struct of its parts.
+func NewDomain(s string) *Domain {
 	var d Domain
 
 	d.FQDN = strings.TrimPrefix(s, "www.")
