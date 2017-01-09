@@ -5,14 +5,22 @@ I wrote it because I did not find a good library that performed these simple fun
 
 Usage:
 ```
-import "github.com/mikecb/robertparker"
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/mikecb/robertparker"
+)
 
 func main() {
-	d := []string{"com", "δοκιμή.δοκιμή", "рф", "p1ai", "xn--p1ai", "foo.appspot.com", "1234.elb.amazonaws.com", "12345134123.azr.msnetanalyticsnet.textanalytics.net", "r20---sn-vgqsen7s.googlevideo.com", "a.b.c.d.alphabet.xyz", "d1y6jrbzotnyjg.cloudfront.net", "st14p04sa.guzzoni-apple.com.akadns.net", "1.2.hi.blob", "fake.test.txt", "test.google"}
-	for _, domain := range d {
-		dom := SplitDomain(domain)
-		doment := Entropy(dom)
-		fmt.Printf("Domain: %s\n%+v\nEntropy: %v\n\n", domain, dom, doment)
+	domains := []string{"appspot.com", "www.appspot.com", "www.google.com", "com", "δοκιμή.δοκιμή", "рф", "p1ai", "xn--p1ai", "foo.appspot.com", "1234.elb.amazonaws.com", "12345134123.azr.msnetanalyticsnet.textanalytics.net", "r20---sn-vgqsen7s.googlevideo.com", "a.b.c.d.alphabet.xyz", "d1y6jrbzotnyjg.cloudfront.net", "st14p04sa.guzzoni-apple.com.akadns.net", "1.2.hi.blob", "fake.test.txt", "test.google"}
+	for _, d := range domains {
+		domain := robertparker.NewDomain(d)
+		robertparker.Entropy(domain)
+		out, _ := json.MarshalIndent(domain, "", "	")
+		fmt.Println(string(out))
 	}
 }
 ```
@@ -24,16 +32,16 @@ Better use of golang concurrency patterns when processing large numbers of domai
 Built-in cli.
 GRPC-based microservice.
 
-Domain:
+Domains
 Similarity generation and lookup like dnstwist.
 
-Abuse:
+Abuse
 Check safebrowsing and virustotal links for the domain and subdomains, and return any hits.
 
-DNS:
+DNS
 Check DNS, return all found records.
 
-Email:
+Email
 Check email security related DNS records for best practices.
 Check mail servers for inclusion on spam/blacklists.
 
