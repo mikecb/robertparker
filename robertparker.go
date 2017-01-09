@@ -11,7 +11,7 @@ import (
 
 //Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
 type Domain struct {
-	FQDN         string   `json:",omitempty"`
+	FQDN         string   `json:",omitempty"` //Fully Qualified Domain Name
 	Suffix       string   `json:",omitempty"` //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
 	Secondary    string   `json:",omitempty"` //The eTLD+1, e.g.: google.com
 	Tertiary     []string `json:",omitempty"` //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
@@ -21,9 +21,12 @@ type Domain struct {
 }
 
 //SplitDomain splits a string reprisenting a domain into a struct of its parts.
-func SplitDomain(s string) Domain {
+func SplitDomain(s string) *Domain {
 	var d Domain
-	puny, _ := idna.ToASCII(s)
+
+	d.FQDN = strings.TrimPrefix(s, "www.")
+
+	puny, _ := idna.ToASCII(d.FQDN)
 	d.Suffix, d.ICANN = publicsuffix.PublicSuffix(puny)
 
 	sec, _ := publicsuffix.EffectiveTLDPlusOne(puny)
@@ -36,5 +39,5 @@ func SplitDomain(s string) Domain {
 		ter := strings.Trim(strings.TrimSuffix(puny, sec), ".")
 		d.Tertiary = strings.Split(ter, ".")
 	}
-	return d
+	return &d
 }

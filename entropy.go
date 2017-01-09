@@ -30,7 +30,7 @@ func shannon(d string) float64 {
 }
 
 // Entropy calculates the shannon entropy of a domain.
-func Entropy(d Domain) float64 {
+func Entropy(d *Domain) float64 {
 	//If ICANN = true, uses second-level as well as subdomains, if false, uses only subdomains.
 	var domainString string
 
@@ -40,6 +40,6 @@ func Entropy(d Domain) float64 {
 	} else {
 		domainString = strings.Join(d.Tertiary, "")
 	}
-
-	return shannon(domainString)
+	d.Entropy = shannon(domainString)
+	return d.Entropy
 }
