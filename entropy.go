@@ -2,6 +2,7 @@ package robertparker
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -21,10 +22,17 @@ func shannon(d string) float64 {
 		t++
 	}
 
+	// Sum in a fixed order; map iteration order is random, which changes the low bits of the result.
+	runes := make([]rune, 0, len(frequency))
+	for r := range frequency {
+		runes = append(runes, r)
+	}
+	sort.Slice(runes, func(a, b int) bool { return runes[a] < runes[b] })
+
 	var entropy float64
-	for _, i := range frequency {
-		k := float64(i) / float64(t)
-		entropy += k * math.Log2(k)
+	for _, r := range runes {
+		k := float64(frequency[r]) / float64(t)
+		entropy += float64(k * math.Log2(k)) // explicit conversion prevents fused multiply-add, so results match across architectures
 	}
 	return entropy * -1
 }

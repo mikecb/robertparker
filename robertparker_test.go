@@ -36,7 +36,7 @@ func ExampleNewDomain() {
 	// 	"Suffix": "com",
 	// 	"Secondary": "google",
 	// 	"ICANN": true,
-	// 	"Entropy": 1.9182958340544893,
+	// 	"Entropy": 1.9182958340544896,
 	// 	"Permutations": null
 	// }
 	// {
@@ -85,10 +85,9 @@ func ExampleNewDomain() {
 	// }
 	// {
 	// 	"FQDN": "1234.elb.amazonaws.com",
-	// 	"Suffix": "elb.amazonaws.com",
-	// 	"Secondary": "1234",
+	// 	"Suffix": "1234.elb.amazonaws.com",
 	// 	"ICANN": false,
-	// 	"Entropy": 2,
+	// 	"Entropy": -0,
 	// 	"Permutations": null
 	// }
 	// {
@@ -101,7 +100,7 @@ func ExampleNewDomain() {
 	// 		"msnetanalyticsnet"
 	// 	],
 	// 	"ICANN": true,
-	// 	"Entropy": 3.9562733121050786,
+	// 	"Entropy": 3.956273312105079,
 	// 	"Permutations": null
 	// }
 	// {
@@ -126,7 +125,7 @@ func ExampleNewDomain() {
 	// 		"d"
 	// 	],
 	// 	"ICANN": true,
-	// 	"Entropy": 3.0220552088742005,
+	// 	"Entropy": 3.0220552088742,
 	// 	"Permutations": null
 	// }
 	// {
@@ -139,15 +138,14 @@ func ExampleNewDomain() {
 	// }
 	// {
 	// 	"FQDN": "st14p04sa.guzzoni-apple.com.akadns.net",
-	// 	"Suffix": "net",
-	// 	"Secondary": "akadns",
+	// 	"Suffix": "akadns.net",
+	// 	"Secondary": "com",
 	// 	"Tertiary": [
 	// 		"st14p04sa",
-	// 		"guzzoni-apple",
-	// 		"com"
+	// 		"guzzoni-apple"
 	// 	],
-	// 	"ICANN": true,
-	// 	"Entropy": 4.1313003425053605,
+	// 	"ICANN": false,
+	// 	"Entropy": 4.053660689688185,
 	// 	"Permutations": null
 	// }
 	// {
