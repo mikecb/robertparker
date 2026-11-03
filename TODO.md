@@ -2,7 +2,8 @@
 
 ## Functionality
 - [x] Concurrency for large numbers of domains: `Process` streams domains through a worker pool, and `Limiter` caps calls to network services.
-- [ ] Encode CLI output in the workers. JSON encoding and writing happen on one goroutine, which limits `-permute` on big lists: 20,000 domains (426 MB of output) take about 5 s whatever the worker count, though `Process` alone scales from 3.7 s to 1.4 s on 12 cores.
+- [x] Speed up `-permute` on big lists. Garbage collection was the main cost, so the CLI now sets a higher GC target (about a third faster, 50-70 MB peak). Moving JSON encoding into the workers was tried and made no measurable difference.
+- [ ] Reduce allocations in `Permute`, which are what still limit it from scaling with cores.
 - [x] Built-in CLI: `cmd/robertparker` reads domains from arguments, a file, or stdin, and exposes `Entropy` and `Permute`.
 - [ ] gRPC-based microservice.
 

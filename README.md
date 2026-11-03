@@ -184,6 +184,8 @@ $ robertparker -permute -f domains.txt > permutations.jsonl
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 
+`Permute` allocates heavily, so the tool runs with a garbage collection target of 800 instead of Go's default of 100, which is about a third faster for around 50 MB more memory. Set the `GOGC` environment variable to override it.
+
 It exits with 1 if it can't read its input or an analysis fails, 2 for invalid flags, and 130 if interrupted with Ctrl-C, after printing the results it has.
 
 ## Building and testing
