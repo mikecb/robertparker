@@ -10,7 +10,7 @@ I wrote it because I did not find a good library that performed these simple fun
 
 | Function | What it does |
 | --- | --- |
-| `NewDomain(s string) *Domain` | Splits a domain into its public suffix, registrable label, and subdomains, using the [Public Suffix List](https://publicsuffix.org/). Accepts Unicode or punycode, and strips a leading `www.`. |
+| `NewDomain(s string) *Domain` | Splits a domain into its public suffix, registrable label, and subdomains, using the [Public Suffix List](https://publicsuffix.org/). Accepts Unicode or punycode, is case-insensitive, and strips a leading `www.` and a trailing dot. |
 | `Entropy(d *Domain) float64` | Shannon entropy of the labels below the public suffix (`Secondary` and `Tertiary`). Stores the result in `d.Entropy` and returns it. Results are identical across platforms. |
 | `Permute(d *Domain) []Permutation` | Generates lookalikes of the registrable label. Stores them in `d.Permutations` and returns them. See [Permutations](#permutations). |
 | `Levenshtein(s1, s2 string) int` | Edit distance between two strings, counting Unicode characters rather than bytes. |
@@ -106,6 +106,42 @@ tld-swap example.site example.site
 
 `www.example.com` produces 210 permutations.
 
+## Command line
+
+```
+go install github.com/mikecb/robertparker/cmd/robertparker@latest
+```
+
+`robertparker` reads domains from its arguments, from a file with `-f`, or from stdin, one per line, ignoring blank lines and `#` comments. By default it prints each domain as one JSON object per line, for piping into tools like `jq`.
+
+```
+$ robertparker www.google.com
+{"FQDN":"google.com","Suffix":"com","Secondary":"google","ICANN":true,"Entropy":1.9182958340544896,"Permutations":null}
+
+$ robertparker -o text www.google.com login.d1y6jrbzotnyjg.cloudfront.net δοκιμή.δοκιμή
+DOMAIN                               SUFFIX          SECONDARY       SUBDOMAINS  ICANN  ENTROPY
+google.com                           com             google          -           true   1.918
+login.d1y6jrbzotnyjg.cloudfront.net  cloudfront.net  d1y6jrbzotnyjg  login       false  3.722
+δοκιμή.δοκιμή                        xn--jxalpdlp    xn--jxalpdlp    -           false  2.918
+
+$ robertparker -o text -permute example.com
+DOMAIN       FUZZER         PERMUTATION     ASCII
+example.com  addition       examplea.com    examplea.com
+...
+example.com  homoglyph      еxample.com     xn--xample-2of.com
+...
+
+$ robertparker -permute -f domains.txt > permutations.jsonl
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
+| `-permute` | Also generate lookalike permutations of each domain. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`). |
+
+It exits with 1 if it can't read its input, and 2 for invalid flags.
+
 ## Building and testing
 
 ```
@@ -116,7 +152,7 @@ go vet ./...
 go test ./...
 ```
 
-`go run ./cli` runs the demo in `cli/main.go`, which prints the parsed form of a list of sample domains as JSON.
+`go run ./cmd/robertparker [flags] [domain ...]` runs the command line tool from source.
 
 GitHub Actions runs the build, vet, and tests on amd64 and arm64 for every push and pull request to `master`, and both must pass before a pull request can merge.
 

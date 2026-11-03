@@ -21,9 +21,11 @@ type Domain struct {
 }
 
 // NewDomain splits a string reprisenting a domain into a struct of its parts.
+// Domains are case-insensitive, so it lowercases the input, and drops a trailing dot as in "google.com.".
 func NewDomain(s string) *Domain {
 	var d Domain
 
+	s = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".")
 	d.FQDN = strings.TrimPrefix(s, "www.")
 
 	punicode, _ := idna.ToASCII(d.FQDN)
