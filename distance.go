@@ -2,8 +2,9 @@ package robertparker
 
 //Distance functions that compute the distance between two strings.
 
-//Levenshtein computes the edit distance between two domain strings.
-func Levenshtein(d1, d2 string) int {
+//Levenshtein computes the edit distance between two domain strings, counting Unicode characters rather than bytes.
+func Levenshtein(s1, s2 string) int {
+	d1, d2 := []rune(s1), []rune(s2)
 	d := make([][]int, len(d1)+1)
 	for i := range d {
 		d[i] = make([]int, len(d2)+1)
