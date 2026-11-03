@@ -34,7 +34,10 @@ func shannon(d string) float64 {
 		k := float64(frequency[r]) / float64(t)
 		entropy += float64(k * math.Log2(k)) // explicit conversion prevents fused multiply-add, so results match across architectures
 	}
-	return entropy * -1
+	if entropy == 0 {
+		return 0 // Negating 0 gives -0, which prints and encodes as "-0".
+	}
+	return -entropy
 }
 
 // Entropy calculates the shannon entropy of a domain.

@@ -206,11 +206,7 @@ func writeText(w io.Writer, d *robertparker.Domain, permute bool) int {
 		}
 		return len(d.Permutations)
 	}
-	entropy := d.Entropy
-	if entropy == 0 {
-		entropy = 0 // Drop the sign from -0.
-	}
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%.3f\n", d.FQDN, d.Suffix, orDash(d.Secondary), orDash(strings.Join(d.Tertiary, ".")), d.ICANN, entropy)
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%.3f\n", d.FQDN, d.Suffix, orDash(d.Secondary), orDash(strings.Join(d.Tertiary, ".")), d.ICANN, d.Entropy)
 	return 1
 }
 
