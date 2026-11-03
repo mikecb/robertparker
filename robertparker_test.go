@@ -3,6 +3,7 @@ package robertparker_test
 import (
 	"encoding/json"
 	"fmt"
+	"testing"
 
 	"github.com/mikecb/robertparker"
 )
@@ -180,6 +181,18 @@ func ExampleNewDomain() {
 	// 	"Permutations": null
 	// }
 
+}
+
+func TestNewDomainNormalizes(t *testing.T) {
+	for _, s := range []string{"WWW.Google.COM", "google.com.", " google.com\n"} {
+		d := robertparker.NewDomain(s)
+		if d.FQDN != "google.com" || d.Suffix != "com" || d.Secondary != "google" || !d.ICANN {
+			t.Errorf("NewDomain(%q) = %+v, want google.com split as com/google", s, *d)
+		}
+		if len(robertparker.Permute(d)) == 0 {
+			t.Errorf("NewDomain(%q): no permutations", s)
+		}
+	}
 }
 
 func ExampleLevenshtein() {

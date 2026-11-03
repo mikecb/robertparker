@@ -2,7 +2,7 @@
 
 ## Functionality
 - [ ] Better use of Go concurrency patterns when processing large numbers of domains.
-- [ ] Built-in CLI. `cli/main.go` currently runs a hard-coded list of domains; read domains from arguments, a file, or stdin, and expose `Entropy` and `Permute`.
+- [x] Built-in CLI: `cmd/robertparker` reads domains from arguments, a file, or stdin, and exposes `Entropy` and `Permute`.
 - [ ] gRPC-based microservice.
 
 ## Domains
@@ -28,3 +28,4 @@
 
 ## Housekeeping
 - [ ] `gofmt` `distance.go`, then add a `gofmt` check to CI.
+- [ ] `Entropy` returns `-0` when there is nothing to score, which shows up as `"Entropy": -0` in JSON.
