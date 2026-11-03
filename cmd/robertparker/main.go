@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"text/tabwriter"
 
@@ -30,14 +31,29 @@ is streamed, so it can be any length.
 Flags:
 `
 
-// textBlock is how many rows of text output are aligned and written at a time, so memory stays bounded.
-const textBlock = 1000
+const (
+	// textBlock is how many rows of text output are aligned and written at a time, so memory stays bounded.
+	textBlock = 1000
+
+	// gcPercent trades a little memory for less garbage collection, which is the main cost of -permute. Measured on
+	// 20,000 domains, it is about a third faster than Go's default of 100, using 50-70 MB instead of about 20 MB. The live
+	// heap is small and bounded by streaming, so this doesn't grow with the input. Higher values gained nothing.
+	gcPercent = 800
+)
 
 func main() {
+	tuneGC()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
+}
+
+// tuneGC sets the garbage collection target, unless the GOGC environment variable already chose one.
+func tuneGC() {
+	if _, ok := os.LookupEnv("GOGC"); !ok {
+		debug.SetGCPercent(gcPercent)
+	}
 }
 
 // run is main, with its inputs and outputs passed in so it can be tested. It returns the exit code.

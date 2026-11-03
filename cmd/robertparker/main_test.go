@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
@@ -262,5 +263,22 @@ func TestReadError(t *testing.T) {
 	}
 	if got := decode(t, stdout.String()); len(got) != 1 || got[0].FQDN != "example.com" {
 		t.Errorf("want domains read before the error to be output, got %+v", got)
+	}
+}
+
+func TestTuneGC(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(100))
+
+	t.Setenv("GOGC", "50")
+	debug.SetGCPercent(50)
+	tuneGC()
+	if got := debug.SetGCPercent(100); got != 50 {
+		t.Errorf("with GOGC set, GC percent is %d, want it left at 50", got)
+	}
+
+	os.Unsetenv("GOGC")
+	tuneGC()
+	if got := debug.SetGCPercent(100); got != gcPercent {
+		t.Errorf("with GOGC unset, GC percent is %d, want %d", got, gcPercent)
 	}
 }
