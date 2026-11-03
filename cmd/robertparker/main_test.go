@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -14,9 +17,23 @@ import (
 // runCLI runs the command with args and stdin, and returns its exit code, stdout, and stderr.
 func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
+	return runCLIContext(t, context.Background(), stdin, args...)
+}
+
+func runCLIContext(t *testing.T, ctx context.Context, stdin string, args ...string) (int, string, string) {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := run(args, strings.NewReader(stdin), &stdout, &stderr)
+	code := run(ctx, args, strings.NewReader(stdin), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
+}
+
+// lines returns n domains, one per line.
+func lines(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "d%d.example.com\n", i)
+	}
+	return b.String()
 }
 
 // decode parses JSON Lines output into domains.
@@ -154,6 +171,7 @@ func TestErrors(t *testing.T) {
 		{"unknown format", []string{"-o", "yaml", "example.com"}, 2, "unknown output format"},
 		{"unknown flag", []string{"-nope"}, 2, "flag provided but not defined"},
 		{"missing file", []string{"-f", filepath.Join(t.TempDir(), "missing.txt")}, 1, "missing.txt"},
+		{"zero workers", []string{"-workers", "0", "example.com"}, 2, "-workers must be at least 1"},
 	}
 	for _, tt := range tests {
 		code, out, errOut := runCLI(t, "", tt.args...)
@@ -167,5 +185,82 @@ func TestHelp(t *testing.T) {
 	code, out, errOut := runCLI(t, "", "-h")
 	if code != 0 || out != "" || !strings.HasPrefix(errOut, "Usage: robertparker") {
 		t.Errorf("got exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+}
+
+func TestWorkersSameOutput(t *testing.T) {
+	in := lines(300)
+	_, one, _ := runCLI(t, in, "-permute", "-workers", "1")
+	code, many, _ := runCLI(t, in, "-permute", "-workers", "16")
+	if code != 0 || one == "" || one != many {
+		t.Errorf("output with 16 workers differs from 1 worker (exit %d)", code)
+	}
+}
+
+func TestUnordered(t *testing.T) {
+	code, out, _ := runCLI(t, lines(300), "-unordered", "-workers", "16")
+	if code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	var got []string
+	for _, d := range decode(t, out) {
+		got = append(got, d.FQDN)
+	}
+	sort.Strings(got)
+	want := strings.Fields(lines(300))
+	sort.Strings(want)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("unordered output is not the same set of domains as the input: got %d", len(got))
+	}
+}
+
+func TestLargeText(t *testing.T) {
+	// More rows than one text block, so output is written in several blocks with one header.
+	code, out, _ := runCLI(t, lines(2500), "-o", "text")
+	if code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	rows := strings.Split(strings.TrimSpace(out), "\n")
+	headers := 0
+	for _, r := range rows {
+		if strings.HasPrefix(r, "DOMAIN ") {
+			headers++
+		}
+	}
+	if len(rows) != 2501 || headers != 1 || !strings.HasPrefix(rows[0], "DOMAIN ") {
+		t.Errorf("want 1 header and 2500 rows, got %d lines and %d headers", len(rows), headers)
+	}
+	if !strings.HasPrefix(rows[2500], "d2499.example.com ") {
+		t.Errorf("last row %q, want d2499.example.com", rows[2500])
+	}
+}
+
+func TestInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code, _, errOut := runCLIContext(t, ctx, lines(1000))
+	if code != 130 || !strings.Contains(errOut, "interrupted") {
+		t.Errorf("got exit %d, stderr %q, want 130 and interrupted", code, errOut)
+	}
+}
+
+// errReader returns its data, then an error.
+type errReader struct{ data *strings.Reader }
+
+func (r errReader) Read(p []byte) (int, error) {
+	if r.data.Len() == 0 {
+		return 0, fmt.Errorf("disk on fire")
+	}
+	return r.data.Read(p)
+}
+
+func TestReadError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-f", "-"}, errReader{strings.NewReader("example.com\n")}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "disk on fire") {
+		t.Errorf("got exit %d, stderr %q, want 1 and the read error", code, stderr.String())
+	}
+	if got := decode(t, stdout.String()); len(got) != 1 || got[0].FQDN != "example.com" {
+		t.Errorf("want domains read before the error to be output, got %+v", got)
 	}
 }

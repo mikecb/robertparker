@@ -14,6 +14,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Entropy(d *Domain) float64` | Shannon entropy of the labels below the public suffix (`Secondary` and `Tertiary`). Stores the result in `d.Entropy` and returns it. Results are identical across platforms. |
 | `Permute(d *Domain) []Permutation` | Generates lookalikes of the registrable label. Stores them in `d.Permutations` and returns them. See [Permutations](#permutations). |
 | `Levenshtein(s1, s2 string) int` | Edit distance between two strings, counting Unicode characters rather than bytes. |
+| `Process(ctx, domains <-chan string, opts Options) <-chan Result` | Analyzes a stream of domains concurrently. See [Processing many domains](#processing-many-domains). |
+| `NewLimiter(concurrent int, perSecond float64) *Limiter` | Caps calls to an external service across all workers. See [Network calls](#network-calls). |
 
 ### Domain
 
@@ -47,6 +49,46 @@ Each `Permutation` has a `Fuzzer`, the permuted `Domain` in Unicode, and its `AS
 | `transposition` | `exmaple.com` |
 | `vowel-swap` | `exomple.com` |
 | `tld-swap` | `example.net` (ICANN domains only) |
+
+### Processing many domains
+
+`Process` reads domains from a channel, runs `NewDomain` and a list of `Analyzer`s on each with a pool of workers, and sends a `Result` for each on the channel it returns. Only a few domains per worker are in progress at once, so the input can be any length, and results start arriving before it ends.
+
+An `Analyzer` is `func(ctx context.Context, d *Domain) error`. `EntropyAnalyzer` and `PermuteAnalyzer` wrap `Entropy` and `Permute`. All of a domain's analyzers run even if one fails, and their errors are joined in `Result.Err`.
+
+| `Options` field | Meaning |
+| --- | --- |
+| `Workers` | Domains analyzed at once. Defaults to `runtime.GOMAXPROCS(0)`, which suits CPU-bound analyzers; network-bound analyzers can use many more. |
+| `Analyzers` | Run in order on each domain. |
+| `Timeout` | If set, the time allowed for all analyzers on one domain. Its context is cancelled when it runs out. |
+| `Unordered` | Send results as they finish, so one slow domain doesn't hold up the rest. By default, results are in input order, which holds back finished results behind a slow one. |
+
+Cancelling `ctx` stops `Process`: it stops reading input, drops results not yet sent, and closes the results channel once its workers have returned. Code sending domains should also stop when `ctx` is done.
+
+### Network calls
+
+A `Limiter` caps the calls to one external service, such as a DNS resolver or an API, both at once and per second. Share one per service across all workers, so the cap holds however many workers there are. `Do` waits for a slot and the rate limit, and returns `ctx.Err()` without calling the function if the context is done first.
+
+```go
+resolver := robertparker.NewLimiter(50, 200) // at most 50 lookups at once, 200 a second
+
+lookup := func(ctx context.Context, d *robertparker.Domain) error {
+	return resolver.Do(ctx, func(ctx context.Context) error {
+		_, err := net.DefaultResolver.LookupHost(ctx, d.FQDN)
+		return err
+	})
+}
+
+opts := robertparker.Options{
+	Workers:   500, // mostly waiting on the network, so far more than the number of CPUs
+	Timeout:   5 * time.Second,
+	Unordered: true,
+	Analyzers: []robertparker.Analyzer{robertparker.EntropyAnalyzer, lookup},
+}
+for r := range robertparker.Process(ctx, domains, opts) {
+	// ...
+}
+```
 
 ## Usage
 
@@ -112,7 +154,7 @@ tld-swap example.site example.site
 go install github.com/mikecb/robertparker/cmd/robertparker@latest
 ```
 
-`robertparker` reads domains from its arguments, from a file with `-f`, or from stdin, one per line, ignoring blank lines and `#` comments. By default it prints each domain as one JSON object per line, for piping into tools like `jq`.
+`robertparker` reads domains from its arguments, from a file with `-f`, or from stdin, one per line, ignoring blank lines and `#` comments. Input is streamed through `Process`, so lists can be any size. By default it prints each domain as one JSON object per line, in input order, for piping into tools like `jq`.
 
 ```
 $ robertparker www.google.com
@@ -138,9 +180,11 @@ $ robertparker -permute -f domains.txt > permutations.jsonl
 | --- | --- |
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`). |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`). Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs. |
+| `-unordered` | Print results as they finish, instead of in input order. |
 
-It exits with 1 if it can't read its input, and 2 for invalid flags.
+It exits with 1 if it can't read its input or an analysis fails, 2 for invalid flags, and 130 if interrupted with Ctrl-C, after printing the results it has.
 
 ## Building and testing
 
@@ -154,7 +198,7 @@ go test ./...
 
 `go run ./cmd/robertparker [flags] [domain ...]` runs the command line tool from source.
 
-GitHub Actions runs the build, vet, and tests on amd64 and arm64 for every push and pull request to `master`, and both must pass before a pull request can merge.
+GitHub Actions runs the build, vet, and tests (with the race detector) on amd64 and arm64 for every push and pull request to `master`, and both must pass before a pull request can merge.
 
 ## Roadmap
 
