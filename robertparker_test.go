@@ -3,6 +3,7 @@ package robertparker_test
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/mikecb/robertparker"
@@ -22,14 +23,14 @@ func ExampleNewDomain() {
 	// 	"FQDN": "appspot.com",
 	// 	"Suffix": "appspot.com",
 	// 	"ICANN": false,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
 	// 	"FQDN": "appspot.com",
 	// 	"Suffix": "appspot.com",
 	// 	"ICANN": false,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
@@ -44,7 +45,7 @@ func ExampleNewDomain() {
 	// 	"FQDN": "com",
 	// 	"Suffix": "com",
 	// 	"ICANN": true,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
@@ -59,21 +60,21 @@ func ExampleNewDomain() {
 	// 	"FQDN": "рф",
 	// 	"Suffix": "xn--p1ai",
 	// 	"ICANN": true,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
 	// 	"FQDN": "p1ai",
 	// 	"Suffix": "p1ai",
 	// 	"ICANN": false,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
 	// 	"FQDN": "xn--p1ai",
 	// 	"Suffix": "xn--p1ai",
 	// 	"ICANN": true,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
@@ -88,7 +89,7 @@ func ExampleNewDomain() {
 	// 	"FQDN": "1234.elb.amazonaws.com",
 	// 	"Suffix": "1234.elb.amazonaws.com",
 	// 	"ICANN": false,
-	// 	"Entropy": -0,
+	// 	"Entropy": 0,
 	// 	"Permutations": null
 	// }
 	// {
@@ -191,6 +192,14 @@ func TestNewDomainNormalizes(t *testing.T) {
 		}
 		if len(robertparker.Permute(d)) == 0 {
 			t.Errorf("NewDomain(%q): no permutations", s)
+		}
+	}
+}
+
+func TestEntropyZeroIsUnsigned(t *testing.T) {
+	for _, s := range []string{"com", "appspot.com", "a.com", "aaaa.com"} {
+		if e := robertparker.Entropy(robertparker.NewDomain(s)); e != 0 || math.Signbit(e) {
+			t.Errorf("Entropy(%s) = %v, want unsigned 0", s, e)
 		}
 	}
 }

@@ -28,5 +28,5 @@
 - [ ] Analyze web requests for TLS best practices, like SSL Labs.
 
 ## Housekeeping
-- [ ] `gofmt` `distance.go`, then add a `gofmt` check to CI.
-- [ ] `Entropy` returns `-0` when there is nothing to score, which shows up as `"Entropy": -0` in JSON.
+- [x] `gofmt` `distance.go`, then add a `gofmt` check to CI.
+- [x] `Entropy` returned `-0` when there was nothing to score, which showed up as `"Entropy": -0` in JSON; it now returns `0`.
