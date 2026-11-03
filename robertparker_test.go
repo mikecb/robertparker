@@ -182,13 +182,13 @@ func ExampleNewDomain() {
 
 }
 
-// func ExampleLevenshtein() {
-// 	d := robertparker.Levenshtein("δοκιμή.δοκιμή", "δδοκιμή.δοκιμή")
-// 	e := robertparker.Levenshtein("δοκιμή.δοκιμή", "δοκιμή.δοκιμή")
-// 	fmt.Printf("%v %v", d, e)
-// 	//Output: 2 0
-// }
-//
+func ExampleLevenshtein() {
+	d := robertparker.Levenshtein("δοκιμή.δοκιμή", "δδοκιμή.δοκιμή")
+	e := robertparker.Levenshtein("δοκιμή.δοκιμή", "δοκιμή.δοκιμή")
+	fmt.Printf("%v %v", d, e)
+	//Output: 1 0
+}
+
 // func ExampleEntropy() {
 // 	for _, domain := range d {
 // 		dom := robertparker.SplitDomain(domain)

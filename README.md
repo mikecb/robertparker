@@ -1,6 +1,6 @@
 robertparker grades domains. Get it? Like Domaine where wine is made. And he grades them...
 
-It performs only a bit of analysis at the moment, including Shannon entropy score on single domains and Levenshtein distance between a set of domains.
+It performs only a bit of analysis at the moment, including Shannon entropy score on single domains, Levenshtein distance between a set of domains, and generation of lookalike permutations of a domain for finding typosquatting and phishing domains.
 I wrote it because I did not find a good library that performed these simple functions that: 1. understands internationalized domain names like pure unicode or punycode domains, and 2. understands the difference in control between public TLDs like .com, and their secondary and tertiary levels, and private platforms like appspot.com where control rests in the third level and below
 
 Usage:
@@ -25,6 +25,16 @@ func main() {
 }
 ```
 
+Permutations:
+
+`Permute` generates lookalikes of the registrable label of a domain, the one directly under the public suffix: `google` in `www.google.com`, or `foo` in `bar.foo.appspot.com`. Fuzzers include addition, bitsquatting, homoglyph (including other scripts, returned as punycode), hyphenation, insertion, omission, repetition, replacement, subdomain, transposition, vowel-swap, and, for ICANN domains, tld-swap. Every result is valid for registration under IDNA2008.
+```
+d := robertparker.NewDomain("www.google.com")
+for _, p := range robertparker.Permute(d) {
+	fmt.Println(p.Fuzzer, p.Domain, p.ASCII) // e.g. homoglyph gоogle.com xn--gogle-jye.com
+}
+```
+
 Future plans:
 
 Functionality:
@@ -33,7 +43,7 @@ Built-in cli.
 GRPC-based microservice.
 
 Domains
-Similarity generation and lookup like dnstwist.
+Similarity lookup like dnstwist: resolve generated permutations to find which are registered.
 
 Abuse
 Check safebrowsing and virustotal links for the domain and subdomains, and return any hits.
