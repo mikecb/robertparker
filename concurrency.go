@@ -34,13 +34,18 @@ type Options struct {
 	Analyzers []Analyzer    //Run in order on each domain. All run even if one fails.
 	Timeout   time.Duration //If set, the time allowed for all analyzers on one domain.
 	Unordered bool          //Send results as they finish, so one slow domain doesn't hold up the rest. Otherwise results are in input order.
+
+	//Encode, if set, turns each analyzed domain into Result.Encoded on its worker. Use it to serialize results for
+	//output, so that serializing runs in parallel and the code reading results only has to write the bytes.
+	Encode func(*Domain) ([]byte, error)
 }
 
 // Result is a domain after analysis.
 type Result struct {
-	Input  string  //The domain as given.
-	Domain *Domain //The domain, split by NewDomain and filled in by the analyzers.
-	Err    error   //Errors from the analyzers, joined, or nil.
+	Input   string  //The domain as given.
+	Domain  *Domain //The domain, split by NewDomain and filled in by the analyzers.
+	Encoded []byte  //The output of Options.Encode, if set.
+	Err     error   //Errors from the analyzers and Options.Encode, joined, or nil.
 }
 
 // Process runs NewDomain and opts.Analyzers on each domain from domains, using opts.Workers goroutines, and sends
@@ -169,6 +174,12 @@ func analyze(ctx context.Context, s string, opts Options) Result {
 	var errs []error
 	for _, a := range opts.Analyzers {
 		if err := a(ctx, r.Domain); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if opts.Encode != nil {
+		var err error
+		if r.Encoded, err = opts.Encode(r.Domain); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -2,6 +2,7 @@ package robertparker_test
 
 import (
 	"fmt"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,6 +115,96 @@ func TestPermuteKnownLookalikes(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s: missing %s permutation %s", tt.domain, tt.fuzzer, tt.want)
+		}
+	}
+}
+
+// checkPlainRegistrable fails if PlainRegistrable accepts s when IDNA would reject or change it.
+func checkPlainRegistrable(t *testing.T, s string) {
+	t.Helper()
+	if !robertparker.PlainRegistrable(s) {
+		return
+	}
+	ascii, err := idna.Registration.ToASCII(s)
+	if err != nil || ascii != s {
+		t.Errorf("PlainRegistrable(%q) = true, but Registration.ToASCII gives %q, %v", s, ascii, err)
+	}
+	if unicode, err := idna.ToUnicode(s); err != nil || unicode != s {
+		t.Errorf("PlainRegistrable(%q) = true, but ToUnicode gives %q, %v", s, unicode, err)
+	}
+}
+
+func TestPlainRegistrable(t *testing.T) {
+	long := strings.Repeat("a", 63)
+	tests := []struct {
+		s    string
+		want bool
+	}{
+		{"example.com", true},
+		{"a-b.co.uk", true},
+		{"1.2.3", true},
+		{long + ".com", true},
+		{strings.Join([]string{long, long, long, strings.Repeat("a", 57)}, ".") + ".com", true},
+		{"", false},
+		{".com", false},
+		{"example..com", false},
+		{"example.com.", false},
+		{"-example.com", false},
+		{"example-.com", false},
+		{"ex--ample.com", false},
+		{"xn--e1afmkfd.com", false},
+		{"example.xn--p1ai", false},
+		{"Example.com", false},
+		{"exa_mple.com", false},
+		{"exämple.com", false},
+		{long + "a.com", false},
+		{strings.Join([]string{long, long, long, long}, ".") + ".com", false},
+	}
+	for _, tt := range tests {
+		if got := robertparker.PlainRegistrable(tt.s); got != tt.want {
+			t.Errorf("PlainRegistrable(%q) = %v, want %v", tt.s, got, tt.want)
+		}
+		checkPlainRegistrable(t, tt.s)
+	}
+}
+
+// TestPlainRegistrableMatchesIDNA generates a lot of nearly valid names, so the fast path is compared with IDNA far
+// from the cases anyone thought to write down, and checks a fair share of them were really accepted.
+func TestPlainRegistrableMatchesIDNA(t *testing.T) {
+	const alphabet = "abcxyz0189---...A_é"
+	r := rand.New(rand.NewSource(1))
+	accepted := 0
+	for i := 0; i < 300000; i++ {
+		b := make([]rune, 1+r.Intn(14))
+		runes := []rune(alphabet)
+		for j := range b {
+			b[j] = runes[r.Intn(len(runes))]
+		}
+		s := string(b)
+		if r.Intn(4) == 0 {
+			s += ".xn--p1ai"
+		}
+		if robertparker.PlainRegistrable(s) {
+			accepted++
+		}
+		checkPlainRegistrable(t, s)
+	}
+	if accepted < 1000 {
+		t.Errorf("only %d of 300000 names reached the comparison", accepted)
+	}
+}
+
+func TestPermuteResultsPassFullCheck(t *testing.T) {
+	// Results must be the same whether a candidate takes the fast path or the full check.
+	for _, s := range []string{"www.example.com", "a.com", "x-y.co.uk", "foo.appspot.com", "example.xn--p1ai", "δοκιμή.δοκιμή", "1.2.hi.blob"} {
+		for _, p := range robertparker.Permute(robertparker.NewDomain(s)) {
+			ascii, err := idna.Registration.ToASCII(p.Domain)
+			if err != nil || ascii != p.ASCII {
+				t.Errorf("%s: %s (%s): full check gives %q, %v", s, p.Domain, p.ASCII, ascii, err)
+			}
+			if unicode, err := idna.ToUnicode(p.ASCII); err != nil || unicode != p.Domain {
+				t.Errorf("%s: %s: full check gives Unicode form %q, %v", s, p.ASCII, unicode, err)
+			}
 		}
 	}
 }

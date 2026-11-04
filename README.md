@@ -62,6 +62,7 @@ An `Analyzer` is `func(ctx context.Context, d *Domain) error`. `EntropyAnalyzer`
 | `Analyzers` | Run in order on each domain. |
 | `Timeout` | If set, the time allowed for all analyzers on one domain. Its context is cancelled when it runs out. |
 | `Unordered` | Send results as they finish, so one slow domain doesn't hold up the rest. By default, results are in input order, which holds back finished results behind a slow one. |
+| `Encode` | If set, turns each analyzed domain into `Result.Encoded` on its worker. Use it to serialize results for output, so that serializing runs in parallel and the code reading results only has to write the bytes. |
 
 Cancelling `ctx` stops `Process`: it stops reading input, drops results not yet sent, and closes the results channel once its workers have returned. Code sending domains should also stop when `ctx` is done.
 
@@ -184,7 +185,7 @@ $ robertparker -permute -f domains.txt > permutations.jsonl
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 
-`Permute` allocates heavily, so the tool runs with a garbage collection target of 800 instead of Go's default of 100, which is about a third faster for around 50 MB more memory. Set the `GOGC` environment variable to override it.
+The tool runs with a garbage collection target of 400 instead of Go's default of 100, which is about 40% faster with `-permute` for around 25 MB more memory. Set the `GOGC` environment variable to override it.
 
 It exits with 1 if it can't read its input or an analysis fails, 2 for invalid flags, and 130 if interrupted with Ctrl-C, after printing the results it has.
 

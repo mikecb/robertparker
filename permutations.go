@@ -2,6 +2,7 @@ package robertparker
 
 import (
 	"strings"
+	"sync"
 
 	"golang.org/x/net/idna"
 )
@@ -10,9 +11,9 @@ import (
 
 // Permutation is a lookalike of a domain, and the fuzzer that generated it.
 type Permutation struct {
-	Fuzzer string `json:","` //The kind of permutation, e.g. "omission" or "homoglyph".
-	Domain string `json:","` //The permuted domain, in Unicode.
-	ASCII  string `json:","` //The permuted domain, in punycode, as it would be registered or looked up.
+	Fuzzer string //The kind of permutation, e.g. "omission" or "homoglyph".
+	Domain string //The permuted domain, in Unicode.
+	ASCII  string //The permuted domain, in punycode, as it would be registered or looked up.
 }
 
 // Permute generates lookalikes of a domain's registrable label, the one directly under the public suffix:
@@ -22,45 +23,135 @@ func Permute(d *Domain) []Permutation {
 	if d.Secondary == "" {
 		return nil
 	}
-	label, err := idna.ToUnicode(d.Secondary)
-	if err != nil {
-		return nil
-	}
-	original, err := idna.Registration.ToASCII(label + "." + d.Suffix)
-	if err != nil {
-		return nil
-	}
-
-	seen := map[string]bool{original: true}
-	add := func(fuzzer, label, suffix string) {
-		ascii, err := idna.Registration.ToASCII(label + "." + suffix)
-		if err != nil || seen[ascii] {
-			return
+	label, original := d.Secondary, d.Secondary+"."+d.Suffix
+	if !plainRegistrable(original) {
+		var err error
+		if label, err = idna.ToUnicode(d.Secondary); err != nil {
+			return nil
 		}
-		seen[ascii] = true
-		unicode, _ := idna.ToUnicode(ascii)
-		d.Permutations = append(d.Permutations, Permutation{Fuzzer: fuzzer, Domain: unicode, ASCII: ascii})
+		if original, err = idna.Registration.ToASCII(label + "." + d.Suffix); err != nil {
+			return nil
+		}
 	}
 
+	p := permuters.Get().(*permuter)
+	defer permuters.Put(p)
+	p.reset(label, d.Suffix, original)
 	for _, f := range fuzzers {
-		for _, l := range f.fn([]rune(label)) {
-			add(f.name, l, d.Suffix)
-		}
+		p.fuzzer = f.name
+		f.fn(p)
 	}
 	if d.ICANN {
+		p.fuzzer = "tld-swap"
 		for _, tld := range swapTLDs {
 			if tld != d.Suffix {
-				add("tld-swap", label, tld)
+				p.suffix = tld
+				p.emit(label)
 			}
 		}
 	}
+	if len(p.out) > 0 {
+		d.Permutations = p.out
+	}
+	p.out = nil
 	return d.Permutations
 }
 
-// fuzzers run in this order, so output is deterministic. Each takes a label and returns candidate labels.
+// permuter holds the state of one call to Permute. It is pooled, because its buffers are the bulk of what Permute
+// would otherwise allocate.
+type permuter struct {
+	label  string          //The label being permuted, in Unicode.
+	runes  []rune          //The characters of label.
+	off    []int           //The byte offset in label of each character, then the length of label.
+	suffix string          //The public suffix to put after each candidate.
+	fuzzer string          //The fuzzer now running.
+	buf    []byte          //The candidate being built.
+	seen   map[string]bool //Candidates as generated and in punycode, so repeats skip validation.
+	out    []Permutation
+}
+
+var permuters = sync.Pool{New: func() any { return &permuter{seen: make(map[string]bool, 512)} }}
+
+// reset prepares p for a new label.
+func (p *permuter) reset(label, suffix, original string) {
+	p.label, p.suffix = label, suffix
+	p.runes, p.off = p.runes[:0], p.off[:0]
+	for i, r := range label {
+		p.runes = append(p.runes, r)
+		p.off = append(p.off, i)
+	}
+	p.off = append(p.off, len(label))
+	clear(p.seen)
+	p.seen[original] = true
+	p.out = make([]Permutation, 0, 32*len(p.runes)+48)
+}
+
+// emit joins parts into a candidate label, and adds it to the results if it is new and valid. Nothing is allocated
+// for a repeat.
+func (p *permuter) emit(parts ...string) {
+	p.buf = p.buf[:0]
+	for _, part := range parts {
+		p.buf = append(p.buf, part...)
+	}
+	p.buf = append(p.buf, '.')
+	p.buf = append(p.buf, p.suffix...)
+	if p.seen[string(p.buf)] {
+		return
+	}
+	candidate := string(p.buf)
+	p.seen[candidate] = true
+	if plainRegistrable(candidate) {
+		p.out = append(p.out, Permutation{Fuzzer: p.fuzzer, Domain: candidate, ASCII: candidate})
+		return
+	}
+	ascii, err := idna.Registration.ToASCII(candidate)
+	if err != nil || (ascii != candidate && p.seen[ascii]) {
+		return
+	}
+	p.seen[ascii] = true
+	unicode, _ := idna.ToUnicode(ascii)
+	p.out = append(p.out, Permutation{Fuzzer: p.fuzzer, Domain: unicode, ASCII: ascii})
+}
+
+// replace emits the label with the character at i replaced by s.
+func (p *permuter) replace(i int, s string) {
+	p.emit(p.label[:p.off[i]], s, p.label[p.off[i+1]:])
+}
+
+// insert emits the label with s inserted before the character at i.
+func (p *permuter) insert(i int, s string) {
+	p.emit(p.label[:p.off[i]], s, p.label[p.off[i]:])
+}
+
+// plainRegistrable reports whether s is certainly valid for registration under IDNA2008, and unchanged by it, without
+// the cost of running IDNA. It only looks at lowercase letters, digits, hyphens, and dots, in labels of a valid length
+// that don't start or end with a hyphen. Anything else, including any "--" and so all punycode, gets false, which only
+// means it needs the full check. Most permutations are plain ASCII.
+func plainRegistrable(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == '.' {
+			if n := i - start; n == 0 || n > 63 || s[start] == '-' || s[i-1] == '-' {
+				return false
+			}
+			start = i + 1
+			continue
+		}
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && (c != '-' || (i > 0 && s[i-1] == '-')) {
+			return false
+		}
+	}
+	return true
+}
+
+// fuzzers run in this order, so output is deterministic. Each emits candidate labels.
 var fuzzers = []struct {
 	name string
-	fn   func([]rune) []string
+	fn   func(*permuter)
 }{
 	{"addition", addition},
 	{"bitsquatting", bitsquatting},
@@ -76,40 +167,35 @@ var fuzzers = []struct {
 }
 
 // addition appends a letter or digit to the label.
-func addition(l []rune) []string {
-	var out []string
+func addition(p *permuter) {
 	for _, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
-		out = append(out, string(l)+string(c))
+		p.emit(p.label, string(c))
 	}
-	return out
 }
 
 // bitsquatting flips each bit of each ASCII character, keeping results that are still valid hostname characters.
-func bitsquatting(l []rune) []string {
-	var out []string
-	for i, c := range l {
+func bitsquatting(p *permuter) {
+	for i, c := range p.runes {
 		if c > 127 {
 			continue
 		}
 		for b := 0; b < 8; b++ {
 			f := c ^ (1 << uint(b))
 			if (f >= 'a' && f <= 'z') || (f >= '0' && f <= '9') || f == '-' {
-				out = append(out, replaceAt(l, i, string(f)))
+				p.replace(i, string(f))
 			}
 		}
 	}
-	return out
 }
 
 // homoglyph replaces one character, or one multi-character sequence like "rn", with something that looks like it.
-func homoglyph(l []rune) []string {
-	var out []string
-	for i, c := range l {
+func homoglyph(p *permuter) {
+	for i, c := range p.runes {
 		for _, g := range homoglyphs[c] {
-			out = append(out, replaceAt(l, i, g))
+			p.replace(i, g)
 		}
 	}
-	s := string(l)
+	s := p.label
 	for _, h := range sequenceHomoglyphs {
 		for i := 0; ; i++ {
 			j := strings.Index(s[i:], h[0])
@@ -117,105 +203,82 @@ func homoglyph(l []rune) []string {
 				break
 			}
 			i += j
-			out = append(out, s[:i]+h[1]+s[i+len(h[0]):])
+			p.emit(s[:i], h[1], s[i+len(h[0]):])
 		}
 	}
-	return out
 }
 
 // hyphenation inserts a hyphen between two characters.
-func hyphenation(l []rune) []string {
-	var out []string
-	for i := 1; i < len(l); i++ {
-		out = append(out, string(l[:i])+"-"+string(l[i:]))
+func hyphenation(p *permuter) {
+	for i := 1; i < len(p.runes); i++ {
+		p.insert(i, "-")
 	}
-	return out
 }
 
 // insertion inserts a neighbouring keyboard key before or after each character.
-func insertion(l []rune) []string {
-	var out []string
-	for i, c := range l {
+func insertion(p *permuter) {
+	for i, c := range p.runes {
 		for _, k := range qwerty[c] {
-			out = append(out, string(l[:i])+string(k)+string(l[i:]))
-			out = append(out, string(l[:i+1])+string(k)+string(l[i+1:]))
+			p.insert(i, string(k))
+			p.insert(i+1, string(k))
 		}
 	}
-	return out
 }
 
 // omission drops one character.
-func omission(l []rune) []string {
-	var out []string
-	for i := range l {
-		out = append(out, replaceAt(l, i, ""))
+func omission(p *permuter) {
+	for i := range p.runes {
+		p.replace(i, "")
 	}
-	return out
 }
 
 // repetition doubles one character.
-func repetition(l []rune) []string {
-	var out []string
-	for i, c := range l {
-		out = append(out, replaceAt(l, i, string(c)+string(c)))
+func repetition(p *permuter) {
+	for i := range p.runes {
+		p.emit(p.label[:p.off[i+1]], p.label[p.off[i]:])
 	}
-	return out
 }
 
 // replacement swaps one character for a neighbouring keyboard key.
-func replacement(l []rune) []string {
-	var out []string
-	for i, c := range l {
+func replacement(p *permuter) {
+	for i, c := range p.runes {
 		for _, k := range qwerty[c] {
-			out = append(out, replaceAt(l, i, string(k)))
+			p.replace(i, string(k))
 		}
 	}
-	return out
 }
 
 // subdomain inserts a dot between two characters, so the first part becomes a subdomain of the rest.
-func subdomain(l []rune) []string {
-	var out []string
-	for i := 1; i < len(l); i++ {
-		if l[i-1] != '-' && l[i] != '-' {
-			out = append(out, string(l[:i])+"."+string(l[i:]))
+func subdomain(p *permuter) {
+	for i := 1; i < len(p.runes); i++ {
+		if p.runes[i-1] != '-' && p.runes[i] != '-' {
+			p.insert(i, ".")
 		}
 	}
-	return out
 }
 
 // transposition swaps two adjacent characters.
-func transposition(l []rune) []string {
-	var out []string
-	for i := 0; i < len(l)-1; i++ {
-		if l[i] != l[i+1] {
-			t := append([]rune{}, l...)
-			t[i], t[i+1] = t[i+1], t[i]
-			out = append(out, string(t))
+func transposition(p *permuter) {
+	s, off := p.label, p.off
+	for i := 0; i < len(p.runes)-1; i++ {
+		if p.runes[i] != p.runes[i+1] {
+			p.emit(s[:off[i]], s[off[i+1]:off[i+2]], s[off[i]:off[i+1]], s[off[i+2]:])
 		}
 	}
-	return out
 }
 
 // vowelSwap replaces one vowel with another.
-func vowelSwap(l []rune) []string {
-	var out []string
-	for i, c := range l {
+func vowelSwap(p *permuter) {
+	for i, c := range p.runes {
 		if !strings.ContainsRune("aeiou", c) {
 			continue
 		}
 		for _, v := range "aeiou" {
 			if v != c {
-				out = append(out, replaceAt(l, i, string(v)))
+				p.replace(i, string(v))
 			}
 		}
 	}
-	return out
-}
-
-// replaceAt returns l with the character at i replaced by s.
-func replaceAt(l []rune, i int, s string) string {
-	return string(l[:i]) + s + string(l[i+1:])
 }
 
 // qwerty maps each key to its neighbours on a US QWERTY keyboard.
