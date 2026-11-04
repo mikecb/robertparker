@@ -18,9 +18,9 @@
 
 ## Findings
 The DNS, Email, TLS, and Web checks below all need these first. Checks marked (intrusive) send something a normal client wouldn't, so they must stay off unless asked for: this tool runs on lists of domains the user may not own.
-- [ ] `Finding` type: check ID, severity, message, and the standard it comes from, added to `Domain` by analyzers.
-- [ ] Grade a domain from its findings, since grading domains is the point of the project.
-- [ ] CLI flags to choose which checks run, with intrusive checks opt-in.
+- [x] `Finding` type: check ID, severity, message, and the standard it comes from, added to `Domain` by analyzers.
+- [x] Grade a domain from its findings, since grading domains is the point of the project.
+- [x] CLI flags to choose which checks run: `-checks`, which is off by default. Intrusive checks need to stay opt-in when they arrive.
 
 ## DNS
 Records:
@@ -58,9 +58,9 @@ Mail exchangers:
 - [ ] Each MX host has forward-confirmed reverse DNS.
 
 SPF (RFC 7208):
-- [ ] Exactly one SPF record, with valid syntax.
-- [ ] Ends in `-all` or `~all`, and flag `+all` and `?all`.
-- [ ] Stays within the limit of 10 DNS lookups, and doesn't use the deprecated `ptr` mechanism.
+- [x] Exactly one SPF record, with valid syntax.
+- [x] Ends in `-all` or `~all`, and flag `+all` and `?all`.
+- [x] Stays within the limit of 10 DNS lookups, and doesn't use the deprecated `ptr` mechanism.
 
 DKIM (RFC 6376):
 - [ ] Find keys at common selectors. This is best effort, since selectors can't be listed.
@@ -68,11 +68,11 @@ DKIM (RFC 6376):
 - [ ] Flag keys in test mode (`t=y`).
 
 DMARC (RFC 9989):
-- [ ] Exactly one valid record, found with the RFC 9989 DNS tree walk rather than the public suffix list.
-- [ ] Policy is `quarantine` or `reject`, and flag `none` as monitoring only.
-- [ ] `sp` and `np` don't weaken the policy for subdomains and non-existent subdomains.
-- [ ] Flag test mode (`t=y`), and the removed `pct`, `rf`, and `ri` tags.
-- [ ] `rua` reporting is set, and external report destinations authorize it.
+- [x] Exactly one valid record, found with the RFC 9989 DNS tree walk rather than the public suffix list. Deciding if a report destination is external still uses the public suffix list.
+- [x] Policy is `quarantine` or `reject`, and flag `none` as monitoring only.
+- [x] `sp` and `np` don't weaken the policy for subdomains and non-existent subdomains.
+- [x] Flag test mode (`t=y`), and the removed `pct`, `rf`, and `ri` tags.
+- [x] `rua` reporting is set, and external report destinations authorize it.
 
 Transport:
 - [ ] MTA-STS: valid TXT record, policy served over HTTPS, and `mode=enforce` (RFC 8461).

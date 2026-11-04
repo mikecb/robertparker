@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/mikecb/robertparker"
 )
@@ -25,6 +27,7 @@ const usage = `Usage: robertparker [flags] [domain ...]
 Splits each domain into its public suffix, registrable label, and subdomains,
 and scores its Shannon entropy. With -permute, also generates lookalike
 permutations of each domain, for finding typosquatting and phishing domains.
+With -checks, also checks each domain's public configuration and grades it.
 
 Domains are read from the arguments, then from -f, or from stdin if neither is
 given, one per line. Blank lines and lines starting with # are ignored. Input
@@ -41,6 +44,24 @@ const (
 	// about 40% faster than Go's default of 100, using about 50 MB instead of about 25 MB. The live heap is small and
 	// bounded by streaming, so this doesn't grow with the input. 800 and 1600 used far more memory for no real gain.
 	gcPercent = 400
+
+	// networkWorkers is the default for -workers with -checks, which mostly wait on the network rather than use CPU.
+	networkWorkers = 64
+)
+
+// resolver does the DNS lookups for -checks. Tests replace it.
+var resolver robertparker.Resolver = net.DefaultResolver
+
+// textView is what -o text shows: a header, and the rows for a domain.
+type textView struct {
+	header string
+	rows   func(io.Writer, *robertparker.Domain)
+}
+
+var (
+	domainView      = textView{"DOMAIN\tSUFFIX\tSECONDARY\tSUBDOMAINS\tICANN\tENTROPY", writeDomain}
+	permutationView = textView{"DOMAIN\tFUZZER\tPERMUTATION\tASCII", writePermutations}
+	findingView     = textView{"DOMAIN\tGRADE\tSEVERITY\tCHECK\tMESSAGE", writeFindings}
 )
 
 func main() {
@@ -49,6 +70,17 @@ func main() {
 	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
+}
+
+// newResolver returns a resolver that asks the DNS server at addr, on port 53 unless addr has its own. Home routers
+// often can't handle the large TCP responses that big domains need, which is one reason to choose a server.
+func newResolver(addr string) *net.Resolver {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(addr, "53")
+	}
+	return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}}
 }
 
 // tuneGC sets the garbage collection target, unless the GOGC environment variable already chose one.
@@ -71,6 +103,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
+	checks := fs.String("checks", "", "comma-separated `list` of checks to run, which makes DNS lookups: email")
+	timeout := fs.Duration("timeout", 10*time.Second, "`time` allowed for the checks on one domain")
+	rate := fs.Float64("rate", 100, "DNS lookups per `second`, or 0 for no limit")
+	dnsServer := fs.String("resolver", "", "DNS server to use, as `host` or host:port, instead of the system's")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -83,6 +119,20 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *workers < 1 {
 		fmt.Fprintf(stderr, "robertparker: -workers must be at least 1\n")
+		return 2
+	}
+	email := false
+	if *checks != "" {
+		for _, c := range strings.Split(*checks, ",") {
+			if c != "email" {
+				fmt.Fprintf(stderr, "robertparker: unknown check %q\n", c)
+				return 2
+			}
+			email = true
+		}
+	}
+	if email && *permute && *format == "text" {
+		fmt.Fprintln(stderr, "robertparker: -o text can show -permute or -checks, not both")
 		return 2
 	}
 
@@ -114,11 +164,28 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		Workers:   *workers,
 		Unordered: *unordered,
 		Analyzers: []robertparker.Analyzer{robertparker.EntropyAnalyzer},
-		Encode:    encoder(*format, *permute),
 	}
+	view := domainView
 	if *permute {
 		opts.Analyzers = append(opts.Analyzers, robertparker.PermuteAnalyzer)
+		view = permutationView
 	}
+	if email {
+		dns := resolver
+		if *dnsServer != "" {
+			dns = newResolver(*dnsServer)
+		}
+		limiter := robertparker.NewLimiter(networkWorkers, *rate)
+		opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, limiter), robertparker.GradeAnalyzer)
+		opts.Timeout = *timeout
+		view = findingView
+		workersSet := false
+		fs.Visit(func(f *flag.Flag) { workersSet = workersSet || f.Name == "workers" })
+		if !workersSet {
+			opts.Workers = networkWorkers
+		}
+	}
+	opts.Encode = encoder(*format, view)
 
 	w := bufio.NewWriter(stdout)
 	var out io.Writer = w
@@ -126,11 +193,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *format == "text" {
 		tw = tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
 		out = tw
-		if *permute {
-			fmt.Fprintln(tw, "DOMAIN\tFUZZER\tPERMUTATION\tASCII")
-		} else {
-			fmt.Fprintln(tw, "DOMAIN\tSUFFIX\tSECONDARY\tSUBDOMAINS\tICANN\tENTROPY")
-		}
+		fmt.Fprintln(tw, view.header)
 	}
 
 	code, rows := 0, 0
@@ -211,14 +274,14 @@ func readDomains(ctx context.Context, args []string, in io.Reader) (<-chan strin
 }
 
 // encoder returns the function that turns a domain into its output bytes, which Process runs on its workers.
-func encoder(format string, permute bool) func(*robertparker.Domain) ([]byte, error) {
+func encoder(format string, view textView) func(*robertparker.Domain) ([]byte, error) {
 	buffers := sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	return func(d *robertparker.Domain) ([]byte, error) {
 		b := buffers.Get().(*bytes.Buffer)
 		defer buffers.Put(b)
 		b.Reset()
 		if format == "text" {
-			writeText(b, d, permute)
+			view.rows(b, d)
 		} else {
 			enc := json.NewEncoder(b)
 			if format == "pretty" {
@@ -232,15 +295,26 @@ func encoder(format string, permute bool) func(*robertparker.Domain) ([]byte, er
 	}
 }
 
-// writeText writes a domain as a row of columns, or one row per permutation.
-func writeText(w io.Writer, d *robertparker.Domain, permute bool) {
-	if permute {
-		for _, p := range d.Permutations {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.FQDN, p.Fuzzer, p.Domain, p.ASCII)
-		}
-		return
-	}
+// writeDomain writes a domain as a row of columns.
+func writeDomain(w io.Writer, d *robertparker.Domain) {
 	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%.3f\n", d.FQDN, d.Suffix, orDash(d.Secondary), orDash(strings.Join(d.Tertiary, ".")), d.ICANN, d.Entropy)
+}
+
+// writePermutations writes one row per permutation of a domain.
+func writePermutations(w io.Writer, d *robertparker.Domain) {
+	for _, p := range d.Permutations {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.FQDN, p.Fuzzer, p.Domain, p.ASCII)
+	}
+}
+
+// writeFindings writes one row per finding on a domain, or a single row with its grade if there are none.
+func writeFindings(w io.Writer, d *robertparker.Domain) {
+	for _, f := range d.Findings {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", d.FQDN, orDash(d.Grade), f.Severity, f.Check, f.Message)
+	}
+	if len(d.Findings) == 0 {
+		fmt.Fprintf(w, "%s\t%s\t-\t-\t-\n", d.FQDN, orDash(d.Grade))
+	}
 }
 
 // orDash returns s, or "-" if it is empty, so text columns are never blank.

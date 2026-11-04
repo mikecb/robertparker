@@ -16,6 +16,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Levenshtein(s1, s2 string) int` | Edit distance between two strings, counting Unicode characters rather than bytes. |
 | `Process(ctx, domains <-chan string, opts Options) <-chan Result` | Analyzes a stream of domains concurrently. See [Processing many domains](#processing-many-domains). |
 | `NewLimiter(concurrent int, perSecond float64) *Limiter` | Caps calls to an external service across all workers. See [Network calls](#network-calls). |
+| `EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer` | Checks a domain's SPF and DMARC records, and adds to `d.Findings`. See [Email checks](#email-checks). |
+| `Grade(d *Domain) string` | Works out a letter grade from `d.Findings`. Stores it in `d.Grade` and returns it. See [Grades](#grades). |
 
 ### Domain
 
@@ -28,6 +30,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `ICANN` | Whether the suffix is an ICANN TLD (`true` for `com`) or a private platform (`false` for `cloudfront.net`, `appspot.com`) |
 | `Entropy` | Set by `Entropy` |
 | `Permutations` | Set by `Permute` |
+| `Findings` | What the checks found. Left out of JSON if there are none |
+| `Grade` | Set by `Grade`. Left out of JSON if there isn't one |
 
 ### Permutations
 
@@ -90,6 +94,36 @@ for r := range robertparker.Process(ctx, domains, opts) {
 	// ...
 }
 ```
+
+### Email checks
+
+`EmailAnalyzer` reads a domain's public DNS records, and adds a `Finding` for each problem, with a check ID, a severity, a message, and the standard it comes from. It checks the registrable domain, since that's where these records are normally published, so `mail.example.com` is checked as `example.com`.
+
+`net.DefaultResolver` works as the `Resolver`. Pass a shared `Limiter` to cap lookups.
+
+| Check | Standard | What it looks for |
+| --- | --- | --- |
+| `spf-record` | RFC 7208 | Exactly one SPF record |
+| `spf-syntax` | RFC 7208 | Valid mechanisms and modifiers |
+| `spf-all` | RFC 7208 | Ends in `-all` or `~all`, following redirects |
+| `spf-lookups` | RFC 7208 | At most 10 DNS lookups, following includes and redirects |
+| `spf-include` | RFC 7208 | Includes and redirects each find one SPF record |
+| `spf-ptr` | RFC 7208 | No deprecated `ptr` mechanism |
+| `dmarc-record` | RFC 9989 | Exactly one record, found with the DNS tree walk |
+| `dmarc-policy` | RFC 9989 | A valid policy of `quarantine` or `reject` |
+| `dmarc-subdomain-policy` | RFC 9989 | `sp` and `np` don't weaken it |
+| `dmarc-testing` | RFC 9989 | Not in test mode (`t=y`) |
+| `dmarc-removed-tag` | RFC 9989 | No `pct`, `rf`, or `ri` tags |
+| `dmarc-reporting` | RFC 9989 | A valid `rua` |
+| `dmarc-report-authorization` | RFC 9990 | External report destinations authorize the reports |
+
+A lookup that fails, such as a timeout, is reported as a `SeverityUnknown` finding and an error, never as a missing record, so a network problem can't make a domain look misconfigured.
+
+### Grades
+
+`Grade` starts at 100, and takes off 15 for each warning and 40 for each failure. Information findings cost nothing. 90 or more is an A, 80 a B, 70 a C, 60 a D, and anything lower an F.
+
+A domain gets no grade if any check couldn't finish, since a grade that ignored it would be a guess, or if it has no registrable domain, like `com`. Run `GradeAnalyzer` after the analyzers that add findings.
 
 ## Usage
 
@@ -175,15 +209,25 @@ example.com  homoglyph      еxample.com     xn--xample-2of.com
 ...
 
 $ robertparker -permute -f domains.txt > permutations.jsonl
+
+$ robertparker -checks email -o text example.com nonexistent-domain-xyz-12345.com
+DOMAIN                            GRADE  SEVERITY  CHECK            MESSAGE
+example.com                       B      warning   dmarc-reporting  No valid rua, so there are no reports on who sends mail as this domain.
+nonexistent-domain-xyz-12345.com  F      failure   spf-record       No SPF record, so anyone can claim to send mail from this domain.
+nonexistent-domain-xyz-12345.com  F      failure   dmarc-record     No DMARC record, so receivers have no policy for mail that fails authentication.
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`). Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
-| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs. |
+| `-checks list` | Comma-separated checks to run and grade. `email` is the only one so far. Off by default, since it makes DNS lookups. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, or per finding with `-checks`). Text can't show `-permute` and `-checks` together. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, or 64 with `-checks`, which mostly wait on the network. |
 | `-unordered` | Print results as they finish, instead of in input order. |
+| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s. |
+| `-rate number` | DNS lookups per second, or 0 for no limit. Defaults to 100. |
+| `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 
 The tool runs with a garbage collection target of 400 instead of Go's default of 100, which is about 40% faster with `-permute` for around 25 MB more memory. Set the `GOGC` environment variable to override it.
 
