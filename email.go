@@ -12,6 +12,9 @@ import (
 //Email checks: SPF here, and DMARC in dmarc.go. They only read public DNS records.
 
 const (
+	// AreaEmail is the area of the email checks.
+	AreaEmail = "email"
+
 	rfcSPF = "RFC 7208"
 
 	// spfLookupLimit is how many DNS-querying terms an SPF evaluation may use before it fails (RFC 7208 section 4.6.4).
@@ -33,6 +36,7 @@ func EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer {
 		if name == "" {
 			return nil
 		}
+		d.Checked(AreaEmail)
 		c := emailChecker{resolver: resolver, limiter: limiter, domain: d}
 		return errors.Join(c.checkSPF(ctx, name), c.checkDMARC(ctx, name))
 	}
@@ -43,6 +47,11 @@ type emailChecker struct {
 	resolver Resolver
 	limiter  *Limiter
 	domain   *Domain
+}
+
+// add records a finding about the domain's email.
+func (c *emailChecker) add(check string, severity Severity, standard, message string) {
+	c.domain.addFinding(AreaEmail, check, severity, standard, message)
 }
 
 // txt returns the TXT records at name. Finding none isn't an error, but a failed lookup is.
@@ -79,44 +88,44 @@ func (c *emailChecker) spfRecords(ctx context.Context, name string) ([]string, e
 func (c *emailChecker) checkSPF(ctx context.Context, name string) error {
 	records, err := c.spfRecords(ctx, name)
 	if err != nil {
-		c.domain.addFinding("spf-record", SeverityUnknown, rfcSPF, fmt.Sprintf("Couldn't look up the SPF record of %s: %v", name, err))
+		c.add("spf-record", SeverityUnknown, rfcSPF, fmt.Sprintf("Couldn't look up the SPF record of %s: %v", name, err))
 		return fmt.Errorf("SPF lookup: %w", err)
 	}
 	switch len(records) {
 	case 0:
-		c.domain.addFinding("spf-record", SeverityFailure, rfcSPF, "No SPF record, so anyone can claim to send mail from this domain.")
+		c.add("spf-record", SeverityFailure, rfcSPF, "No SPF record, so anyone can claim to send mail from this domain.")
 		return nil
 	case 1:
 	default:
-		c.domain.addFinding("spf-record", SeverityFailure, rfcSPF, fmt.Sprintf("%d SPF records, which makes SPF fail. There must be exactly one.", len(records)))
+		c.add("spf-record", SeverityFailure, rfcSPF, fmt.Sprintf("%d SPF records, which makes SPF fail. There must be exactly one.", len(records)))
 		return nil
 	}
 
 	w := spfWalk{checker: c, seen: map[string]bool{strings.ToLower(name): true}}
 	if err := w.walk(ctx, name, records[0]); err != nil {
-		c.domain.addFinding("spf-lookups", SeverityUnknown, rfcSPF, fmt.Sprintf("Couldn't follow the includes of %s: %v", name, err))
+		c.add("spf-lookups", SeverityUnknown, rfcSPF, fmt.Sprintf("Couldn't follow the includes of %s: %v", name, err))
 		return fmt.Errorf("SPF lookup: %w", err)
 	}
 	if w.syntaxError != "" {
-		c.domain.addFinding("spf-syntax", SeverityFailure, rfcSPF, w.syntaxError)
+		c.add("spf-syntax", SeverityFailure, rfcSPF, w.syntaxError)
 	}
 	if w.lookups > spfLookupLimit {
-		c.domain.addFinding("spf-lookups", SeverityFailure, rfcSPF, fmt.Sprintf("Needs more than the limit of %d DNS lookups, which makes SPF fail.", spfLookupLimit))
+		c.add("spf-lookups", SeverityFailure, rfcSPF, fmt.Sprintf("Needs more than the limit of %d DNS lookups, which makes SPF fail.", spfLookupLimit))
 	}
 	if w.usesPtr {
-		c.domain.addFinding("spf-ptr", SeverityWarning, rfcSPF, "Uses the ptr mechanism, which RFC 7208 says not to use.")
+		c.add("spf-ptr", SeverityWarning, rfcSPF, "Uses the ptr mechanism, which RFC 7208 says not to use.")
 	}
 	for _, broken := range w.broken {
-		c.domain.addFinding("spf-include", SeverityFailure, rfcSPF, broken)
+		c.add("spf-include", SeverityFailure, rfcSPF, broken)
 	}
 	switch w.all {
 	case "-", "~":
 	case "+":
-		c.domain.addFinding("spf-all", SeverityFailure, rfcSPF, "Ends in +all, which allows anyone to send mail from this domain.")
+		c.add("spf-all", SeverityFailure, rfcSPF, "Ends in +all, which allows anyone to send mail from this domain.")
 	case "?":
-		c.domain.addFinding("spf-all", SeverityWarning, rfcSPF, "Ends in ?all, which takes no position on other senders.")
+		c.add("spf-all", SeverityWarning, rfcSPF, "Ends in ?all, which takes no position on other senders.")
 	default:
-		c.domain.addFinding("spf-all", SeverityWarning, rfcSPF, "Doesn't end in -all or ~all, so other senders aren't rejected.")
+		c.add("spf-all", SeverityWarning, rfcSPF, "Doesn't end in -all or ~all, so other senders aren't rejected.")
 	}
 	return nil
 }

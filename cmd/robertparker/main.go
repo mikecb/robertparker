@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -61,8 +62,11 @@ type textView struct {
 var (
 	domainView      = textView{"DOMAIN\tSUFFIX\tSECONDARY\tSUBDOMAINS\tICANN\tENTROPY", writeDomain}
 	permutationView = textView{"DOMAIN\tFUZZER\tPERMUTATION\tASCII", writePermutations}
-	findingView     = textView{"DOMAIN\tGRADE\tSEVERITY\tCHECK\tMESSAGE", writeFindings}
+	findingView     = textView{"DOMAIN\tGRADE\tAREAS\tSEVERITY\tCHECK\tMESSAGE", writeFindings}
 )
+
+// webDial makes the connections for -checks tls and web, if set. Tests replace it.
+var webDial func(ctx context.Context, network, addr string) (net.Conn, error)
 
 func main() {
 	tuneGC()
@@ -103,9 +107,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
-	checks := fs.String("checks", "", "comma-separated `list` of checks to run, which makes DNS lookups: email")
+	checks := fs.String("checks", "", "comma-separated `list` of checks to run: email, tls, web. These make DNS lookups and web requests")
 	timeout := fs.Duration("timeout", 10*time.Second, "`time` allowed for the checks on one domain")
-	rate := fs.Float64("rate", 100, "DNS lookups per `second`, or 0 for no limit")
+	rate := fs.Float64("rate", 100, "DNS lookups and web requests per `second`, or 0 for no limit")
 	dnsServer := fs.String("resolver", "", "DNS server to use, as `host` or host:port, instead of the system's")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -121,17 +125,24 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintf(stderr, "robertparker: -workers must be at least 1\n")
 		return 2
 	}
-	email := false
+	email, web := false, robertparker.WebConfig{DialContext: webDial}
 	if *checks != "" {
 		for _, c := range strings.Split(*checks, ",") {
-			if c != "email" {
+			switch c {
+			case robertparker.AreaEmail:
+				email = true
+			case robertparker.AreaTLS:
+				web.TLS = true
+			case robertparker.AreaWeb:
+				web.Web = true
+			default:
 				fmt.Fprintf(stderr, "robertparker: unknown check %q\n", c)
 				return 2
 			}
-			email = true
 		}
 	}
-	if email && *permute && *format == "text" {
+	checking := email || web.TLS || web.Web
+	if checking && *permute && *format == "text" {
 		fmt.Fprintln(stderr, "robertparker: -o text can show -permute or -checks, not both")
 		return 2
 	}
@@ -170,13 +181,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		opts.Analyzers = append(opts.Analyzers, robertparker.PermuteAnalyzer)
 		view = permutationView
 	}
-	if email {
+	if checking {
 		dns := resolver
 		if *dnsServer != "" {
-			dns = newResolver(*dnsServer)
+			custom := newResolver(*dnsServer)
+			dns = custom
+			if web.DialContext == nil {
+				web.DialContext = (&net.Dialer{Resolver: custom}).DialContext
+			}
 		}
 		limiter := robertparker.NewLimiter(networkWorkers, *rate)
-		opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, limiter), robertparker.GradeAnalyzer)
+		if email {
+			opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, limiter))
+		}
+		if web.TLS || web.Web {
+			opts.Analyzers = append(opts.Analyzers, robertparker.WebAnalyzer(web, limiter))
+		}
+		opts.Analyzers = append(opts.Analyzers, robertparker.GradeAnalyzer)
 		opts.Timeout = *timeout
 		view = findingView
 		workersSet := false
@@ -307,13 +328,19 @@ func writePermutations(w io.Writer, d *robertparker.Domain) {
 	}
 }
 
-// writeFindings writes one row per finding on a domain, or a single row with its grade if there are none.
+// writeFindings writes one row per finding on a domain, or a single row with its grades if there are none.
 func writeFindings(w io.Writer, d *robertparker.Domain) {
+	areas := make([]string, 0, len(d.Grades))
+	for area, grade := range d.Grades {
+		areas = append(areas, area+"="+grade)
+	}
+	sort.Strings(areas)
+	grades := orDash(strings.Join(areas, ","))
 	for _, f := range d.Findings {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", d.FQDN, orDash(d.Grade), f.Severity, f.Check, f.Message)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", d.FQDN, orDash(d.Grade), grades, f.Severity, f.Check, f.Message)
 	}
 	if len(d.Findings) == 0 {
-		fmt.Fprintf(w, "%s\t%s\t-\t-\t-\n", d.FQDN, orDash(d.Grade))
+		fmt.Fprintf(w, "%s\t%s\t%s\t-\t-\t-\n", d.FQDN, orDash(d.Grade), grades)
 	}
 }
 

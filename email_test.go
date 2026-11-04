@@ -364,8 +364,9 @@ func TestGrade(t *testing.T) {
 	}
 	for _, tt := range tests {
 		d := robertparker.NewDomain("example.com")
-		for _, s := range tt.severities {
-			d.Findings = append(d.Findings, robertparker.Finding{Severity: s})
+		d.Checked("x")
+		for i, s := range tt.severities {
+			d.Findings = append(d.Findings, robertparker.Finding{Area: "x", Check: fmt.Sprint(i), Severity: s})
 		}
 		if got := robertparker.Grade(d); got != tt.want || d.Grade != tt.want {
 			t.Errorf("%v: got %q, stored %q, want %q", tt.severities, got, d.Grade, tt.want)

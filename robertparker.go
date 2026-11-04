@@ -11,15 +11,18 @@ import (
 
 // Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
 type Domain struct {
-	FQDN         string        //Fully Qualified Domain Name
-	Suffix       string        //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
-	Secondary    string        `json:",omitempty"` //The eTLD+1, e.g.: google.com
-	Tertiary     []string      `json:",omitempty"` //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
-	ICANN        bool          //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
-	Entropy      float64       //This might turn into a map if more than one entropy algorithm were to be implemented.
-	Permutations []Permutation //A slice of permutations on the registrable domain, for testing for phishing, domain squatting, etc.
-	Findings     []Finding     `json:",omitempty"` //What the checks found.
-	Grade        string        `json:",omitempty"` //The letter grade from Findings, set by Grade.
+	FQDN         string            //Fully Qualified Domain Name
+	Suffix       string            //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
+	Secondary    string            `json:",omitempty"` //The eTLD+1, e.g.: google.com
+	Tertiary     []string          `json:",omitempty"` //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
+	ICANN        bool              //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
+	Entropy      float64           //This might turn into a map if more than one entropy algorithm were to be implemented.
+	Permutations []Permutation     //A slice of permutations on the registrable domain, for testing for phishing, domain squatting, etc.
+	Findings     []Finding         `json:",omitempty"` //What the checks found.
+	Grades       map[string]string `json:",omitempty"` //The letter grade for each area, set by Grade.
+	Grade        string            `json:",omitempty"` //The overall letter grade, the worst of Grades, set by Grade.
+
+	areas []string //The areas that were checked. See Checked.
 }
 
 // registrable returns the domain directly under the public suffix, in punycode, or "" if there isn't one.
@@ -30,9 +33,14 @@ func (d *Domain) registrable() string {
 	return d.Secondary + "." + d.Suffix
 }
 
+// hostname returns the whole domain in punycode, including any subdomains, without a leading www.
+func (d *Domain) hostname() string {
+	return strings.Join(append(append([]string{}, d.Tertiary...), d.registrable()), ".")
+}
+
 // addFinding records a finding about the domain.
-func (d *Domain) addFinding(check string, severity Severity, standard, message string) {
-	d.Findings = append(d.Findings, Finding{Check: check, Severity: severity, Message: message, Standard: standard})
+func (d *Domain) addFinding(area, check string, severity Severity, standard, message string) {
+	d.Findings = append(d.Findings, Finding{Area: area, Check: check, Severity: severity, Message: message, Standard: standard})
 }
 
 // NewDomain splits a string reprisenting a domain into a struct of its parts.
