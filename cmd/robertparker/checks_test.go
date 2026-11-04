@@ -212,3 +212,114 @@ func TestChecksTextShowsAreas(t *testing.T) {
 		t.Errorf("want the area grades in sorted order, got:\n%s", out)
 	}
 }
+
+// fakeLookalikes answers lookups for a few names.
+type fakeLookalikes struct {
+	hosts map[string][]string
+	mx    map[string]string
+	fail  bool
+}
+
+func (f *fakeLookalikes) LookupHost(_ context.Context, name string) ([]string, error) {
+	if f.fail {
+		return nil, &net.DNSError{Err: "server misbehaving", Name: name, IsTemporary: true}
+	}
+	if h, ok := f.hosts[name]; ok {
+		return append([]string{}, h...), nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (f *fakeLookalikes) LookupNS(_ context.Context, name string) ([]*net.NS, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (f *fakeLookalikes) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
+	if host, ok := f.mx[name]; ok {
+		return []*net.MX{{Host: host}}, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func useLookalikes(t *testing.T, f *fakeLookalikes) {
+	t.Helper()
+	old := lookalikes
+	lookalikes = f
+	t.Cleanup(func() { lookalikes = old })
+}
+
+func goodLookalikes() *fakeLookalikes {
+	return &fakeLookalikes{
+		hosts: map[string][]string{"exmaple.com": {"192.0.2.1"}, "example.net": {"192.0.2.2"}},
+		mx:    map[string]string{"exmaple.com": "mail.exmaple.com."},
+	}
+}
+
+func TestLookupJSON(t *testing.T) {
+	useLookalikes(t, goodLookalikes())
+	code, out, errOut := runCLI(t, "", "-rate", "0", "-lookup", "example.com")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	got := decode(t, out)
+	if len(got) != 1 || len(got[0].Lookalikes) != 2 || got[0].Lookalikes[0].ASCII != "exmaple.com" || len(got[0].Lookalikes[0].MailServers) != 1 {
+		t.Fatalf("%+v", got)
+	}
+	if got[0].Permutations != nil {
+		t.Errorf("-lookup alone shouldn't list every permutation, got %d", len(got[0].Permutations))
+	}
+}
+
+func TestLookupWithPermute(t *testing.T) {
+	useLookalikes(t, goodLookalikes())
+	_, out, _ := runCLI(t, "", "-rate", "0", "-lookup", "-permute", "example.com")
+	if got := decode(t, out); len(got) != 1 || len(got[0].Lookalikes) != 2 || len(got[0].Permutations) < 100 {
+		t.Errorf("want both lists, got %d and %d", len(got[0].Lookalikes), len(got[0].Permutations))
+	}
+}
+
+func TestLookupText(t *testing.T) {
+	useLookalikes(t, goodLookalikes())
+	code, out, _ := runCLI(t, "", "-rate", "0", "-lookup", "-o", "text", "example.com")
+	rows := strings.Split(strings.TrimSpace(out), "\n")
+	if code != 0 || len(rows) != 3 {
+		t.Fatalf("exit %d, want a header and 2 rows:\n%s", code, out)
+	}
+	if f := strings.Fields(rows[0]); strings.Join(f, " ") != "DOMAIN FUZZER LOOKALIKE ASCII MAIL SHARED-NS BROKEN-DNS ADDRESSES" {
+		t.Errorf("unexpected header %q", rows[0])
+	}
+	if f := strings.Fields(rows[1]); strings.Join(f, " ") != "example.com transposition exmaple.com exmaple.com yes - - 192.0.2.1" {
+		t.Errorf("unexpected row %q", rows[1])
+	}
+	if f := strings.Fields(rows[2]); strings.Join(f, " ") != "example.com tld-swap example.net example.net - - - 192.0.2.2" {
+		t.Errorf("unexpected row %q", rows[2])
+	}
+}
+
+func TestLookupFailure(t *testing.T) {
+	useLookalikes(t, &fakeLookalikes{fail: true})
+	code, out, errOut := runCLI(t, "", "-rate", "0", "-lookup", "example.com")
+	got := decode(t, out)
+	if code != 1 || !strings.Contains(errOut, "lookalike lookups failed") || len(got) != 1 || got[0].LookupFailures == 0 {
+		t.Errorf("got exit %d, stderr %q, %+v", code, errOut, got)
+	}
+}
+
+func TestLookupWithChecks(t *testing.T) {
+	useLookalikes(t, goodLookalikes())
+	useResolver(t, goodResolver())
+	code, out, _ := runCLI(t, "", "-rate", "0", "-lookup", "-checks", "email", "good.com")
+	if got := decode(t, out); code != 0 || len(got) != 1 || got[0].Grade != "A" {
+		t.Errorf("exit %d: %+v", code, got)
+	}
+	if code, _, errOut := runCLI(t, "", "-rate", "0", "-lookup", "-checks", "email", "-o", "text", "good.com"); code != 2 || !strings.Contains(errOut, "not both") {
+		t.Errorf("got exit %d, stderr %q", code, errOut)
+	}
+}
+
+func TestLookupOffByDefault(t *testing.T) {
+	useLookalikes(t, goodLookalikes())
+	if _, out, _ := runCLI(t, "", "example.com"); strings.Contains(out, "Lookalikes") {
+		t.Errorf("got %s", out)
+	}
+}

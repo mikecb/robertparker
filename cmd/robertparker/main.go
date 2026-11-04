@@ -48,10 +48,20 @@ const (
 
 	// networkWorkers is the default for -workers with -checks, which mostly wait on the network rather than use CPU.
 	networkWorkers = 64
+
+	// lookupWorkers is the default for -workers with -lookup. Each domain already looks up many names at once.
+	lookupWorkers = 8
+
+	// lookupTimeout is the default for -timeout with -lookup. A domain has hundreds of lookups, and spends most of its
+	// time waiting behind -rate, so this only catches something stuck. Each lookup has its own short timeout.
+	lookupTimeout = 10 * time.Minute
 )
 
-// resolver does the DNS lookups for -checks. Tests replace it.
-var resolver robertparker.Resolver = net.DefaultResolver
+// resolver does the DNS lookups for -checks, and lookalikes for -lookup. Tests replace them.
+var (
+	resolver   robertparker.Resolver          = net.DefaultResolver
+	lookalikes robertparker.LookalikeResolver = net.DefaultResolver
+)
 
 // textView is what -o text shows: a header, and the rows for a domain.
 type textView struct {
@@ -63,6 +73,7 @@ var (
 	domainView      = textView{"DOMAIN\tSUFFIX\tSECONDARY\tSUBDOMAINS\tICANN\tENTROPY", writeDomain}
 	permutationView = textView{"DOMAIN\tFUZZER\tPERMUTATION\tASCII", writePermutations}
 	findingView     = textView{"DOMAIN\tGRADE\tAREAS\tSEVERITY\tCHECK\tMESSAGE", writeFindings}
+	lookalikeView   = textView{"DOMAIN\tFUZZER\tLOOKALIKE\tASCII\tMAIL\tSHARED-NS\tBROKEN-DNS\tADDRESSES", writeLookalikes}
 )
 
 // webDial makes the connections for -checks tls and web, if set. Tests replace it.
@@ -104,6 +115,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	file := fs.String("f", "", "read domains from `file`, one per line (- for stdin)")
 	permute := fs.Bool("permute", false, "generate lookalike permutations of each domain")
+	lookup := fs.Bool("lookup", false, "find which permutations of each domain exist, using DNS only")
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
@@ -142,8 +154,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	}
 	checking := email || web.TLS || web.Web
-	if checking && *permute && *format == "text" {
-		fmt.Fprintln(stderr, "robertparker: -o text can show -permute or -checks, not both")
+	if checking && (*permute || *lookup) && *format == "text" {
+		fmt.Fprintln(stderr, "robertparker: -o text can show -permute, -lookup, or -checks, not both")
 		return 2
 	}
 
@@ -181,11 +193,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		opts.Analyzers = append(opts.Analyzers, robertparker.PermuteAnalyzer)
 		view = permutationView
 	}
-	if checking {
-		dns := resolver
+	if checking || *lookup {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		dns, names := resolver, lookalikes
 		if *dnsServer != "" {
 			custom := newResolver(*dnsServer)
-			dns = custom
+			dns, names = custom, custom
 			if web.DialContext == nil {
 				web.DialContext = (&net.Dialer{Resolver: custom}).DialContext
 			}
@@ -197,13 +211,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if web.TLS || web.Web {
 			opts.Analyzers = append(opts.Analyzers, robertparker.WebAnalyzer(web, limiter))
 		}
-		opts.Analyzers = append(opts.Analyzers, robertparker.GradeAnalyzer)
+		if checking {
+			opts.Analyzers = append(opts.Analyzers, robertparker.GradeAnalyzer)
+			view = findingView
+			if !set["workers"] {
+				opts.Workers = networkWorkers
+			}
+		}
 		opts.Timeout = *timeout
-		view = findingView
-		workersSet := false
-		fs.Visit(func(f *flag.Flag) { workersSet = workersSet || f.Name == "workers" })
-		if !workersSet {
-			opts.Workers = networkWorkers
+		if *lookup {
+			opts.Analyzers = append(opts.Analyzers, robertparker.LookalikeAnalyzer(names, limiter))
+			view = lookalikeView
+			if !set["workers"] {
+				opts.Workers = lookupWorkers
+			}
+			if !set["timeout"] {
+				opts.Timeout = lookupTimeout
+			}
 		}
 	}
 	opts.Encode = encoder(*format, view)
@@ -341,6 +365,19 @@ func writeFindings(w io.Writer, d *robertparker.Domain) {
 	}
 	if len(d.Findings) == 0 {
 		fmt.Fprintf(w, "%s\t%s\t%s\t-\t-\t-\n", d.FQDN, orDash(d.Grade), grades)
+	}
+}
+
+// writeLookalikes writes one row per lookalike that exists.
+func writeLookalikes(w io.Writer, d *robertparker.Domain) {
+	yes := func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "-"
+	}
+	for _, l := range d.Lookalikes {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.FQDN, l.Fuzzer, l.Domain, l.ASCII, yes(len(l.MailServers) > 0), yes(l.SharedNameServers), yes(l.BrokenDNS), orDash(strings.Join(l.Addresses, ",")))
 	}
 }
 

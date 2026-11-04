@@ -21,6 +21,9 @@ type Domain struct {
 	Findings     []Finding         `json:",omitempty"` //What the checks found.
 	Grades       map[string]string `json:",omitempty"` //The letter grade for each area, set by Grade.
 	Grade        string            `json:",omitempty"` //The overall letter grade, the worst of Grades, set by Grade.
+	Lookalikes   []Lookalike       `json:",omitempty"` //The permutations that exist, set by LookalikeAnalyzer.
+
+	LookupFailures int `json:",omitzero"` //How many permutations couldn't be looked up, so Lookalikes may be missing some.
 
 	areas []string //The areas that were checked. See Checked.
 }
