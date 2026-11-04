@@ -2,8 +2,9 @@
 
 ## Functionality
 - [x] Concurrency for large numbers of domains: `Process` streams domains through a worker pool, and `Limiter` caps calls to network services.
-- [x] Speed up `-permute` on big lists. Garbage collection was the main cost, so the CLI now sets a higher GC target (about a third faster, 50-70 MB peak). Moving JSON encoding into the workers was tried and made no measurable difference.
-- [ ] Reduce allocations in `Permute`, which are what still limit it from scaling with cores.
+- [x] Speed up `-permute` on big lists. `Permute` skips IDNA for plain ASCII candidates and reuses its buffers (about 3× faster, with 60% fewer allocations), JSON encoding runs on the workers through `Options.Encode`, and the CLI sets a higher GC target.
+- [ ] Make JSON encoding cheaper. It's now about half of the time spent on the workers with `-permute`.
+- [ ] Measure scaling past 4 cores. The development machine stopped at about 4× even on pure arithmetic, so scaling beyond that is untested.
 - [x] Built-in CLI: `cmd/robertparker` reads domains from arguments, a file, or stdin, and exposes `Entropy` and `Permute`.
 - [ ] gRPC-based microservice.
 

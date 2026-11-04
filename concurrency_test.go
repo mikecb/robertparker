@@ -179,6 +179,61 @@ func TestProcessErrors(t *testing.T) {
 	}
 }
 
+func TestProcessEncode(t *testing.T) {
+	for _, unordered := range []bool{false, true} {
+		var running, peak int64
+		encode := func(d *robertparker.Domain) ([]byte, error) {
+			n := atomic.AddInt64(&running, 1)
+			for {
+				p := atomic.LoadInt64(&peak)
+				if n <= p || atomic.CompareAndSwapInt64(&peak, p, n) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+			atomic.AddInt64(&running, -1)
+			return []byte(d.Secondary), nil
+		}
+		ctx := context.Background()
+		opts := robertparker.Options{Workers: 4, Unordered: unordered, Encode: encode}
+		for r := range robertparker.Process(ctx, feed(ctx, numbered(40)), opts) {
+			if string(r.Encoded) != r.Domain.Secondary || r.Err != nil {
+				t.Fatalf("unordered=%v: got Encoded %q, Err %v for %s", unordered, r.Encoded, r.Err, r.Input)
+			}
+		}
+		if peak != 4 {
+			t.Errorf("unordered=%v: peak of %d encoders at once, want 4 running on the workers", unordered, peak)
+		}
+	}
+}
+
+func TestProcessEncodeSeesAnalyzers(t *testing.T) {
+	ctx := context.Background()
+	opts := robertparker.Options{
+		Analyzers: []robertparker.Analyzer{robertparker.EntropyAnalyzer},
+		Encode: func(d *robertparker.Domain) ([]byte, error) {
+			return []byte(fmt.Sprintf("%.3f", d.Entropy)), nil
+		},
+	}
+	results := collect(robertparker.Process(ctx, feed(ctx, []string{"google.com"}), opts))
+	if len(results) != 1 || string(results[0].Encoded) != "1.918" {
+		t.Errorf("Encode did not run after the analyzers: %+v", results)
+	}
+}
+
+func TestProcessEncodeError(t *testing.T) {
+	errAnalyze, errEncode := errors.New("analyzer failed"), errors.New("encode failed")
+	ctx := context.Background()
+	opts := robertparker.Options{
+		Analyzers: []robertparker.Analyzer{func(context.Context, *robertparker.Domain) error { return errAnalyze }},
+		Encode:    func(*robertparker.Domain) ([]byte, error) { return nil, errEncode },
+	}
+	results := collect(robertparker.Process(ctx, feed(ctx, []string{"google.com"}), opts))
+	if len(results) != 1 || !errors.Is(results[0].Err, errAnalyze) || !errors.Is(results[0].Err, errEncode) {
+		t.Errorf("want both errors joined, got %+v", results)
+	}
+}
+
 func TestProcessTimeout(t *testing.T) {
 	block := func(ctx context.Context, d *robertparker.Domain) error {
 		if d.Secondary == "slow" {

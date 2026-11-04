@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/mikecb/robertparker"
@@ -35,10 +37,10 @@ const (
 	// textBlock is how many rows of text output are aligned and written at a time, so memory stays bounded.
 	textBlock = 1000
 
-	// gcPercent trades a little memory for less garbage collection, which is the main cost of -permute. Measured on
-	// 20,000 domains, it is about a third faster than Go's default of 100, using 50-70 MB instead of about 20 MB. The live
-	// heap is small and bounded by streaming, so this doesn't grow with the input. Higher values gained nothing.
-	gcPercent = 800
+	// gcPercent trades a little memory for less garbage collection. Measured on 20,000 domains with -permute, it is
+	// about 40% faster than Go's default of 100, using about 50 MB instead of about 25 MB. The live heap is small and
+	// bounded by streaming, so this doesn't grow with the input. 800 and 1600 used far more memory for no real gain.
+	gcPercent = 400
 )
 
 func main() {
@@ -112,22 +114,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		Workers:   *workers,
 		Unordered: *unordered,
 		Analyzers: []robertparker.Analyzer{robertparker.EntropyAnalyzer},
+		Encode:    encoder(*format, *permute),
 	}
 	if *permute {
 		opts.Analyzers = append(opts.Analyzers, robertparker.PermuteAnalyzer)
 	}
 
 	w := bufio.NewWriter(stdout)
-	var enc *json.Encoder
+	var out io.Writer = w
 	var tw *tabwriter.Writer
-	switch *format {
-	case "json":
-		enc = json.NewEncoder(w)
-	case "pretty":
-		enc = json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-	case "text":
+	if *format == "text" {
 		tw = tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
+		out = tw
 		if *permute {
 			fmt.Fprintln(tw, "DOMAIN\tFUZZER\tPERMUTATION\tASCII")
 		} else {
@@ -141,11 +139,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			fmt.Fprintf(stderr, "robertparker: %s: %v\n", r.Input, r.Err)
 			code = 1
 		}
-		var err error
-		if enc != nil {
-			err = enc.Encode(r.Domain)
-		} else {
-			rows += writeText(tw, r.Domain, *permute)
+		_, err := out.Write(r.Encoded)
+		if err == nil && tw != nil {
+			rows += bytes.Count(r.Encoded, []byte{'\n'})
 			if rows >= textBlock {
 				err = tw.Flush()
 				rows = 0
@@ -214,16 +210,37 @@ func readDomains(ctx context.Context, args []string, in io.Reader) (<-chan strin
 	return domains, errc
 }
 
-// writeText writes a domain as a row of columns, or one row per permutation, and returns the number of rows.
-func writeText(w io.Writer, d *robertparker.Domain, permute bool) int {
+// encoder returns the function that turns a domain into its output bytes, which Process runs on its workers.
+func encoder(format string, permute bool) func(*robertparker.Domain) ([]byte, error) {
+	buffers := sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	return func(d *robertparker.Domain) ([]byte, error) {
+		b := buffers.Get().(*bytes.Buffer)
+		defer buffers.Put(b)
+		b.Reset()
+		if format == "text" {
+			writeText(b, d, permute)
+		} else {
+			enc := json.NewEncoder(b)
+			if format == "pretty" {
+				enc.SetIndent("", "  ")
+			}
+			if err := enc.Encode(d); err != nil {
+				return nil, err
+			}
+		}
+		return bytes.Clone(b.Bytes()), nil
+	}
+}
+
+// writeText writes a domain as a row of columns, or one row per permutation.
+func writeText(w io.Writer, d *robertparker.Domain, permute bool) {
 	if permute {
 		for _, p := range d.Permutations {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.FQDN, p.Fuzzer, p.Domain, p.ASCII)
 		}
-		return len(d.Permutations)
+		return
 	}
 	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%.3f\n", d.FQDN, d.Suffix, orDash(d.Secondary), orDash(strings.Join(d.Tertiary, ".")), d.ICANN, d.Entropy)
-	return 1
 }
 
 // orDash returns s, or "-" if it is empty, so text columns are never blank.

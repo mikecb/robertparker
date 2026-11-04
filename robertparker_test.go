@@ -2,6 +2,7 @@ package robertparker_test
 
 import (
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"math"
 	"testing"
@@ -192,6 +193,29 @@ func TestNewDomainNormalizes(t *testing.T) {
 		}
 		if len(robertparker.Permute(d)) == 0 {
 			t.Errorf("NewDomain(%q): no permutations", s)
+		}
+	}
+}
+
+func TestDomainMarshalsWithJSONv2(t *testing.T) {
+	for _, s := range domains {
+		d := robertparker.NewDomain(s)
+		robertparker.Entropy(d)
+		robertparker.Permute(d)
+		if d.Permutations == nil {
+			d.Permutations = []robertparker.Permutation{} // v2 writes nil as [], where v1 writes null.
+		}
+		got, err := jsonv2.Marshal(d)
+		if err != nil {
+			t.Errorf("%s: %v", s, err)
+			continue
+		}
+		want, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s: v2 output differs from v1:\n%s\n%s", s, got, want)
 		}
 	}
 }
