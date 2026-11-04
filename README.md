@@ -17,7 +17,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Process(ctx, domains <-chan string, opts Options) <-chan Result` | Analyzes a stream of domains concurrently. See [Processing many domains](#processing-many-domains). |
 | `NewLimiter(concurrent int, perSecond float64) *Limiter` | Caps calls to an external service across all workers. See [Network calls](#network-calls). |
 | `EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer` | Checks a domain's SPF and DMARC records, and adds to `d.Findings`. See [Email checks](#email-checks). |
-| `Grade(d *Domain) string` | Works out a letter grade from `d.Findings`. Stores it in `d.Grade` and returns it. See [Grades](#grades). |
+| `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
+| `Grade(d *Domain) string` | Works out letter grades from `d.Findings`. Stores them in `d.Grades` and `d.Grade`, and returns the overall one. See [Grades](#grades). |
 
 ### Domain
 
@@ -31,7 +32,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Entropy` | Set by `Entropy` |
 | `Permutations` | Set by `Permute` |
 | `Findings` | What the checks found. Left out of JSON if there are none |
-| `Grade` | Set by `Grade`. Left out of JSON if there isn't one |
+| `Grades` | The letter grade for each area checked, set by `Grade`. Left out of JSON if there are none |
+| `Grade` | The overall letter grade, set by `Grade`. Left out of JSON if there isn't one |
 
 ### Permutations
 
@@ -119,11 +121,48 @@ for r := range robertparker.Process(ctx, domains, opts) {
 
 A lookup that fails, such as a timeout, is reported as a `SeverityUnknown` finding and an error, never as a missing record, so a network problem can't make a domain look misconfigured.
 
+### TLS and Web checks
+
+`WebAnalyzer` makes ordinary requests to a site, like a browser would, and doesn't probe for anything. It checks the host as given, since each host is its own site, and a registrable domain that isn't reachable gets a second try at `www`. Set `TLS` and `Web` in its `WebConfig` to choose the areas. Both come from the same requests.
+
+| Check | What it looks for |
+| --- | --- |
+| `tls-https` | The site serves HTTPS |
+| `tls-handshake` | The TLS connection works |
+| `tls-version` | TLS 1.2 or later, noting TLS 1.2 as information |
+| `tls-cipher` | A forward-secret AEAD cipher |
+| `tls-post-quantum` | X25519MLKEM768 key exchange, as information |
+| `tls-expiry` | Not expired, or expiring within the last tenth of its lifetime |
+| `tls-hostname` | The certificate is valid for the host |
+| `tls-chain` | The certificate chains to a trusted root |
+| `tls-lifetime` | Within the CA/Browser Forum limit for its issue date, for trusted certificates |
+| `tls-key` | RSA of at least 2048 bits, or ECDSA of at least 256 |
+| `tls-signature` | No SHA-1 or MD5 signature |
+| `tls-transparency` | Has Certificate Transparency timestamps, for trusted certificates |
+| `web-https` | The site serves HTTPS |
+| `web-https-redirect` | HTTP leads to HTTPS, and HTTPS doesn't lead back to HTTP |
+| `web-hsts` | `Strict-Transport-Security` for at least a year, noting subdomains and preloading as information |
+| `web-csp` | An enforced `Content-Security-Policy`, without `unsafe-inline`, `unsafe-eval`, or wildcards in `default-src` or `script-src` |
+| `web-framing` | CSP `frame-ancestors` or `X-Frame-Options` |
+| `web-nosniff` | `X-Content-Type-Options: nosniff` |
+| `web-referrer` | `Referrer-Policy` doesn't send full URLs to other sites |
+| `web-cookies` | Cookies are `Secure`, noting `HttpOnly` and `SameSite` as information |
+| `web-cors` | Credentialed responses don't allow other origins |
+| `web-permissions`, `web-coop` | `Permissions-Policy` and `Cross-Origin-Opener-Policy`, as information |
+| `web-obsolete`, `web-disclosure` | Obsolete headers, and versions given away, as information |
+| `web-security-txt` | A `security.txt` that hasn't expired, with a missing one as information |
+
+To be able to report a broken certificate, it connects without verifying, then does the verification itself, so each problem gets its own finding. Nothing sensitive is ever sent.
+
+A normal connection only shows the best a server offers, so a site that also allows old TLS versions or weak ciphers won't show here. The results are what a plain client gets, and a site can treat browsers differently. HSTS preloading isn't looked up, so a preloaded site that doesn't also send the header is reported as not having it.
+
 ### Grades
 
-`Grade` starts at 100, and takes off 15 for each warning and 40 for each failure. Information findings cost nothing. 90 or more is an A, 80 a B, 70 a C, 60 a D, and anything lower an F.
+Each area that was checked gets its own grade in `d.Grades`, and `d.Grade` is the worst of them, because a strong area doesn't make up for a weak one: good email settings don't help if the certificate has expired.
 
-A domain gets no grade if any check couldn't finish, since a grade that ignored it would be a guess, or if it has no registrable domain, like `com`. Run `GradeAnalyzer` after the analyzers that add findings.
+An area starts at 100, and loses 40 for a failure and 15 for a warning, or 10 for a warning in `web`, which has many more checks and more of them about hardening. Each check costs once, at its worst, however many ways it found a problem. Information findings cost nothing. 90 or more is an A, 80 a B, 70 a C, 60 a D, and anything lower an F.
+
+An area that doesn't apply, like `web` on a domain with no web server, gets no grade, rather than credit for having nothing wrong. An area where a check couldn't finish gets no grade either, since it would be a guess, and then there's no overall grade. Run `GradeAnalyzer` after the analyzers that add findings.
 
 ## Usage
 
@@ -210,24 +249,25 @@ example.com  homoglyph      еxample.com     xn--xample-2of.com
 
 $ robertparker -permute -f domains.txt > permutations.jsonl
 
-$ robertparker -checks email -o text example.com nonexistent-domain-xyz-12345.com
-DOMAIN                            GRADE  SEVERITY  CHECK            MESSAGE
-example.com                       B      warning   dmarc-reporting  No valid rua, so there are no reports on who sends mail as this domain.
-nonexistent-domain-xyz-12345.com  F      failure   spf-record       No SPF record, so anyone can claim to send mail from this domain.
-nonexistent-domain-xyz-12345.com  F      failure   dmarc-record     No DMARC record, so receivers have no policy for mail that fails authentication.
+$ robertparker -checks email,tls,web -o text mozilla.org
+DOMAIN       GRADE  AREAS                SEVERITY  CHECK              MESSAGE
+mozilla.org  B      email=A,tls=A,web=B  info      dmarc-removed-tag  Uses the pct tag, which RFC 9989 removed.
+mozilla.org  B      email=A,tls=A,web=B  warning   web-hsts           Strict-Transport-Security has a max-age under a year.
+mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Security-Policy allows unsafe-eval.
+...
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
-| `-checks list` | Comma-separated checks to run and grade. `email` is the only one so far. Off by default, since it makes DNS lookups. |
+| `-checks list` | Comma-separated areas to check and grade: `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
 | `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, or per finding with `-checks`). Text can't show `-permute` and `-checks` together. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, or 64 with `-checks`, which mostly wait on the network. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 | `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s. |
-| `-rate number` | DNS lookups per second, or 0 for no limit. Defaults to 100. |
-| `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
+| `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |
+| `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`, including for web requests. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 
 The tool runs with a garbage collection target of 400 instead of Go's default of 100, which is about 40% faster with `-permute` for around 25 MB more memory. Set the `GOGC` environment variable to override it.
 

@@ -89,17 +89,17 @@ Applies to HTTPS, and to SMTP through STARTTLS. Based on RFC 9325, Mozilla's TLS
 
 Protocols and ciphers:
 - [ ] Prober with hand-built ClientHellos, since Go's `crypto/tls` can't offer SSLv3 or export ciphers.
-- [ ] TLS 1.3 and 1.2 are enabled. TLS 1.1, 1.0, and SSL are disabled (RFC 8996).
-- [ ] Only forward-secret AEAD ciphers. Flag RSA key exchange, CBC, RC4, 3DES, NULL, and export ciphers.
-- [ ] Report post-quantum key exchange (X25519MLKEM768) as information, not yet as a failure.
+- [ ] TLS 1.3 and 1.2 are enabled. TLS 1.1, 1.0, and SSL are disabled (RFC 8996). This needs the prober: a normal connection only shows the best version a server offers, so old versions are only caught if nothing newer works.
+- [ ] Only forward-secret AEAD ciphers. Flag RSA key exchange, CBC, RC4, 3DES, NULL, and export ciphers. A normal connection only shows the one negotiated, which `tls-cipher` checks, so a full answer needs the prober.
+- [x] Report post-quantum key exchange (X25519MLKEM768) as information, not yet as a failure.
 - [ ] Secure renegotiation is supported (RFC 5746), and TLS compression is off.
 
 Certificate:
-- [ ] Chain is complete and leads to a trusted root, and the name matches the SAN.
-- [ ] Not expired, and warn when close to expiry, scaled to the certificate's lifetime.
-- [ ] Lifetime is within the CA/Browser Forum limit for its issue date: 200 days from March 2026, 100 from March 2027, and 47 from March 2029.
-- [ ] RSA key of at least 2048 bits, or ECDSA P-256 or better, with a SHA-256 or better signature.
-- [ ] Has Certificate Transparency SCTs.
+- [x] Chain is complete and leads to a trusted root, and the name matches the SAN.
+- [x] Not expired, and warn when close to expiry, scaled to the certificate's lifetime.
+- [x] Lifetime is within the CA/Browser Forum limit for its issue date: 200 days from March 2026, 100 from March 2027, and 47 from March 2029.
+- [x] RSA key of at least 2048 bits, or ECDSA P-256 or better, with a SHA-256 or better signature.
+- [x] Has Certificate Transparency SCTs.
 - [ ] Not revoked, checked through CRLs or OCSP. Don't require OCSP stapling, since CAs are dropping OCSP.
 
 Known vulnerabilities:
@@ -109,28 +109,28 @@ Known vulnerabilities:
 Based on the OWASP Secure Headers Project, HTTP Headers Cheat Sheet, and ASVS.
 
 HTTPS:
-- [ ] HTTP redirects to HTTPS, on the apex and `www`.
-- [ ] HSTS `max-age` is at least a year, with `includeSubDomains`, and report whether it's eligible for preload.
+- [x] HTTP redirects to HTTPS, on the apex and `www`.
+- [x] HSTS `max-age` is at least a year, with `includeSubDomains`, and report whether it's eligible for preload.
 - [ ] No mixed content on the landing page.
 
 Headers:
-- [ ] Content-Security-Policy is set, and flag `unsafe-inline`, `unsafe-eval`, and wildcard sources.
-- [ ] Framing is restricted by CSP `frame-ancestors` or `X-Frame-Options`.
-- [ ] `X-Content-Type-Options: nosniff`.
-- [ ] `Referrer-Policy` doesn't leak full URLs across origins.
-- [ ] `Permissions-Policy` is set.
-- [ ] `Cross-Origin-Opener-Policy` is set, and report COEP and CORP as information.
-- [ ] Flag obsolete headers: `Expect-CT`, `Public-Key-Pins`, and `X-XSS-Protection` set to anything but `0`.
+- [x] Content-Security-Policy is set, and flag `unsafe-inline`, `unsafe-eval`, and wildcard sources.
+- [x] Framing is restricted by CSP `frame-ancestors` or `X-Frame-Options`.
+- [x] `X-Content-Type-Options: nosniff`.
+- [x] `Referrer-Policy` doesn't leak full URLs across origins.
+- [x] `Permissions-Policy` is set.
+- [x] `Cross-Origin-Opener-Policy` is set.
+- [x] Flag obsolete headers: `Expect-CT`, `Public-Key-Pins`, and `X-XSS-Protection` set to anything but `0`.
 
 Cookies:
-- [ ] Set with `Secure`, `HttpOnly`, and `SameSite`, and report use of the `__Host-` prefix.
+- [x] Set with `Secure`, `HttpOnly`, and `SameSite`.
 
 CORS:
-- [ ] Credentialed responses don't allow a wildcard, or reflect an arbitrary `Origin`.
+- [x] Credentialed responses don't allow a wildcard, or reflect an arbitrary `Origin`.
 
 Information disclosure:
-- [ ] `Server` and `X-Powered-By` don't reveal versions.
-- [ ] `/.well-known/security.txt` exists, and hasn't passed its `Expires` date (RFC 9116).
+- [x] `Server` and `X-Powered-By` don't reveal versions.
+- [x] `/.well-known/security.txt` exists, and hasn't passed its `Expires` date (RFC 9116).
 - [ ] Third-party scripts use Subresource Integrity.
 
 Server exposure:

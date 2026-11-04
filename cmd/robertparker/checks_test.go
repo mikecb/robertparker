@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,13 +76,13 @@ func TestChecksText(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("want a header and 2 rows, got:\n%s", out)
 	}
-	if f := strings.Fields(rows[0]); strings.Join(f, " ") != "DOMAIN GRADE SEVERITY CHECK MESSAGE" {
+	if f := strings.Fields(rows[0]); strings.Join(f, " ") != "DOMAIN GRADE AREAS SEVERITY CHECK MESSAGE" {
 		t.Errorf("unexpected header %q", rows[0])
 	}
-	if f := strings.Fields(rows[1]); strings.Join(f, " ") != "good.com A - - -" {
+	if f := strings.Fields(rows[1]); strings.Join(f, " ") != "good.com A email=A - - -" {
 		t.Errorf("unexpected row %q", rows[1])
 	}
-	if f := strings.Fields(rows[2]); len(f) < 5 || f[0] != "weak.com" || f[1] != "B" || f[2] != "warning" || f[3] != "dmarc-policy" {
+	if f := strings.Fields(rows[2]); len(f) < 6 || f[0] != "weak.com" || f[1] != "B" || f[2] != "email=B" || f[3] != "warning" || f[4] != "dmarc-policy" {
 		t.Errorf("unexpected row %q", rows[2])
 	}
 }
@@ -122,7 +124,7 @@ func TestChecksOffByDefault(t *testing.T) {
 
 func TestChecksFlags(t *testing.T) {
 	useResolver(t, goodResolver())
-	if code, _, errOut := runCLI(t, "", "-checks", "tls", "good.com"); code != 2 || !strings.Contains(errOut, `unknown check "tls"`) {
+	if code, _, errOut := runCLI(t, "", "-checks", "nonsense", "good.com"); code != 2 || !strings.Contains(errOut, `unknown check "nonsense"`) {
 		t.Errorf("got exit %d, stderr %q", code, errOut)
 	}
 	if code, out, _ := runCLI(t, "", "-checks", "email", "-workers", "1", "-rate", "0", "-timeout", "1s", "good.com"); code != 0 || decode(t, out)[0].Grade != "A" {
@@ -155,5 +157,58 @@ func TestNoChecksKeepsOutput(t *testing.T) {
 	want := `{"FQDN":"example.com","Suffix":"com","Secondary":"example","ICANN":true,"Entropy":2.5216406363433186,"Permutations":null}`
 	if strings.TrimSpace(out) != want {
 		t.Errorf("got %s, want %s", out, want)
+	}
+}
+
+// useSite sends the -checks tls and web requests to a local HTTPS server, whose certificate won't verify.
+func useSite(t *testing.T) {
+	t.Helper()
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	}))
+	t.Cleanup(site.Close)
+	old := webDial
+	webDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, site.Listener.Addr().String())
+	}
+	t.Cleanup(func() { webDial = old })
+}
+
+func TestChecksWeb(t *testing.T) {
+	useSite(t)
+	useResolver(t, goodResolver())
+	code, out, errOut := runCLI(t, "", "-checks", "email,tls,web", "good.com")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	got := decode(t, out)
+	if len(got) != 1 || got[0].Grades["email"] != "A" || got[0].Grades["tls"] == "" || got[0].Grades["web"] == "" {
+		t.Fatalf("want a grade for each area, got %+v", got)
+	}
+	if got[0].Grade == "A" {
+		t.Errorf("the overall grade should reflect the untrusted certificate: %+v", got[0])
+	}
+}
+
+func TestChecksChooseAreas(t *testing.T) {
+	useSite(t)
+	f := goodResolver()
+	useResolver(t, f)
+	code, out, _ := runCLI(t, "", "-checks", "tls", "good.com")
+	got := decode(t, out)
+	if code != 0 || len(got) != 1 || len(got[0].Grades) != 1 || got[0].Grades["tls"] == "" {
+		t.Errorf("exit %d: %+v", code, got)
+	}
+	if f.calls.Load() != 0 {
+		t.Errorf("-checks tls made %d email lookups", f.calls.Load())
+	}
+}
+
+func TestChecksTextShowsAreas(t *testing.T) {
+	useSite(t)
+	useResolver(t, goodResolver())
+	_, out, _ := runCLI(t, "", "-checks", "email,tls", "-o", "text", "good.com")
+	if !strings.Contains(out, "email=A,tls=") {
+		t.Errorf("want the area grades in sorted order, got:\n%s", out)
 	}
 }

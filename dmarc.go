@@ -97,29 +97,29 @@ func (c *emailChecker) findDMARC(ctx context.Context, name string) (*dmarcRecord
 func (c *emailChecker) checkDMARC(ctx context.Context, name string) error {
 	record, atStart, err := c.findDMARC(ctx, name)
 	if err != nil {
-		c.domain.addFinding("dmarc-record", SeverityUnknown, rfcDMARC, fmt.Sprintf("Couldn't look up the DMARC record of %s: %v", name, err))
+		c.add("dmarc-record", SeverityUnknown, rfcDMARC, fmt.Sprintf("Couldn't look up the DMARC record of %s: %v", name, err))
 		return fmt.Errorf("DMARC lookup: %w", err)
 	}
 	if atStart > 1 {
-		c.domain.addFinding("dmarc-record", SeverityFailure, rfcDMARC, fmt.Sprintf("%d DMARC records at _dmarc.%s, so receivers discard them all.", atStart, name))
+		c.add("dmarc-record", SeverityFailure, rfcDMARC, fmt.Sprintf("%d DMARC records at _dmarc.%s, so receivers discard them all.", atStart, name))
 		return nil
 	}
 	if record == nil {
-		c.domain.addFinding("dmarc-record", SeverityFailure, rfcDMARC, "No DMARC record, so receivers have no policy for mail that fails authentication.")
+		c.add("dmarc-record", SeverityFailure, rfcDMARC, "No DMARC record, so receivers have no policy for mail that fails authentication.")
 		return nil
 	}
 
 	inherited := record.domain != name
 	if inherited {
-		c.domain.addFinding("dmarc-record", SeverityInfo, rfcDMARC, fmt.Sprintf("No record of its own, so the policy comes from %s.", record.domain))
+		c.add("dmarc-record", SeverityInfo, rfcDMARC, fmt.Sprintf("No record of its own, so the policy comes from %s.", record.domain))
 	}
 	c.checkDMARCPolicy(record, inherited)
 	if record.tags["t"] == "y" {
-		c.domain.addFinding("dmarc-testing", SeverityWarning, rfcDMARC, "In test mode (t=y), so receivers apply the policy one level lower.")
+		c.add("dmarc-testing", SeverityWarning, rfcDMARC, "In test mode (t=y), so receivers apply the policy one level lower.")
 	}
 	for _, tag := range []string{"pct", "rf", "ri"} {
 		if _, ok := record.tags[tag]; ok {
-			c.domain.addFinding("dmarc-removed-tag", SeverityInfo, rfcDMARC, fmt.Sprintf("Uses the %s tag, which RFC 9989 removed.", tag))
+			c.add("dmarc-removed-tag", SeverityInfo, rfcDMARC, fmt.Sprintf("Uses the %s tag, which RFC 9989 removed.", tag))
 		}
 	}
 	return c.checkDMARCReports(ctx, record)
@@ -133,10 +133,10 @@ func (c *emailChecker) checkDMARCPolicy(record *dmarcRecord, inherited bool) {
 	if policyStrength[p] == 0 || (hasSP && policyStrength[sp] == 0) || (hasNP && policyStrength[np] == 0) {
 		// RFC 9989 section 4.10.1: only a valid rua saves a record like this, and then only as p=none.
 		if len(validReportURIs(record)) == 0 {
-			c.domain.addFinding("dmarc-policy", SeverityFailure, rfcDMARC, "Has a missing or invalid policy and no valid rua, so receivers apply no DMARC processing.")
+			c.add("dmarc-policy", SeverityFailure, rfcDMARC, "Has a missing or invalid policy and no valid rua, so receivers apply no DMARC processing.")
 			return
 		}
-		c.domain.addFinding("dmarc-policy", SeverityWarning, rfcDMARC, "Has a missing or invalid policy, so receivers act as if it were p=none.")
+		c.add("dmarc-policy", SeverityWarning, rfcDMARC, "Has a missing or invalid policy, so receivers act as if it were p=none.")
 		return
 	}
 
@@ -146,17 +146,17 @@ func (c *emailChecker) checkDMARCPolicy(record *dmarcRecord, inherited bool) {
 		effective = sp
 	}
 	if effective == "none" {
-		c.domain.addFinding("dmarc-policy", SeverityWarning, rfcDMARC, "Policy is none, which only monitors, and doesn't stop spoofed mail.")
+		c.add("dmarc-policy", SeverityWarning, rfcDMARC, "Policy is none, which only monitors, and doesn't stop spoofed mail.")
 	}
 	if hasSP && policyStrength[sp] < policyStrength[p] {
-		c.domain.addFinding("dmarc-subdomain-policy", SeverityWarning, rfcDMARC, fmt.Sprintf("sp=%s is weaker than p=%s, so subdomains are less protected.", sp, p))
+		c.add("dmarc-subdomain-policy", SeverityWarning, rfcDMARC, fmt.Sprintf("sp=%s is weaker than p=%s, so subdomains are less protected.", sp, p))
 	}
 	subdomains := p
 	if hasSP {
 		subdomains = sp
 	}
 	if hasNP && policyStrength[np] < policyStrength[subdomains] {
-		c.domain.addFinding("dmarc-subdomain-policy", SeverityWarning, rfcDMARC, fmt.Sprintf("np=%s is weaker than the policy for existing subdomains, so made-up subdomains are less protected.", np))
+		c.add("dmarc-subdomain-policy", SeverityWarning, rfcDMARC, fmt.Sprintf("np=%s is weaker than the policy for existing subdomains, so made-up subdomains are less protected.", np))
 	}
 }
 
@@ -186,7 +186,7 @@ func reportHost(u *url.URL) string {
 func (c *emailChecker) checkDMARCReports(ctx context.Context, record *dmarcRecord) error {
 	uris := validReportURIs(record)
 	if len(uris) == 0 {
-		c.domain.addFinding("dmarc-reporting", SeverityWarning, rfcDMARC, "No valid rua, so there are no reports on who sends mail as this domain.")
+		c.add("dmarc-reporting", SeverityWarning, rfcDMARC, "No valid rua, so there are no reports on who sends mail as this domain.")
 		return nil
 	}
 	policyOrg := organizationalDomain(record.domain)
@@ -197,12 +197,12 @@ func (c *emailChecker) checkDMARCReports(ctx context.Context, record *dmarcRecor
 		}
 		name := record.domain + "._report._dmarc." + host
 		if len(name) > 253 {
-			c.domain.addFinding("dmarc-report-authorization", SeverityWarning, rfcDMARCReports, fmt.Sprintf("Reports to %s can't be authorized, because the DNS name would be too long.", host))
+			c.add("dmarc-report-authorization", SeverityWarning, rfcDMARCReports, fmt.Sprintf("Reports to %s can't be authorized, because the DNS name would be too long.", host))
 			continue
 		}
 		records, err := c.txt(ctx, name)
 		if err != nil {
-			c.domain.addFinding("dmarc-report-authorization", SeverityUnknown, rfcDMARCReports, fmt.Sprintf("Couldn't check that %s accepts reports: %v", host, err))
+			c.add("dmarc-report-authorization", SeverityUnknown, rfcDMARCReports, fmt.Sprintf("Couldn't check that %s accepts reports: %v", host, err))
 			return fmt.Errorf("DMARC report authorization lookup: %w", err)
 		}
 		authorized := false
@@ -210,7 +210,7 @@ func (c *emailChecker) checkDMARCReports(ctx context.Context, record *dmarcRecor
 			authorized = authorized || parseDMARC(name, r) != nil
 		}
 		if !authorized {
-			c.domain.addFinding("dmarc-report-authorization", SeverityWarning, rfcDMARCReports, fmt.Sprintf("%s hasn't authorized reports for this domain, so receivers won't send them.", host))
+			c.add("dmarc-report-authorization", SeverityWarning, rfcDMARCReports, fmt.Sprintf("%s hasn't authorized reports for this domain, so receivers won't send them.", host))
 		}
 	}
 	return nil
