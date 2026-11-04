@@ -18,6 +18,21 @@ type Domain struct {
 	ICANN        bool          //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
 	Entropy      float64       //This might turn into a map if more than one entropy algorithm were to be implemented.
 	Permutations []Permutation //A slice of permutations on the registrable domain, for testing for phishing, domain squatting, etc.
+	Findings     []Finding     `json:",omitempty"` //What the checks found.
+	Grade        string        `json:",omitempty"` //The letter grade from Findings, set by Grade.
+}
+
+// registrable returns the domain directly under the public suffix, in punycode, or "" if there isn't one.
+func (d *Domain) registrable() string {
+	if d.Secondary == "" {
+		return ""
+	}
+	return d.Secondary + "." + d.Suffix
+}
+
+// addFinding records a finding about the domain.
+func (d *Domain) addFinding(check string, severity Severity, standard, message string) {
+	d.Findings = append(d.Findings, Finding{Check: check, Severity: severity, Message: message, Standard: standard})
 }
 
 // NewDomain splits a string reprisenting a domain into a struct of its parts.
