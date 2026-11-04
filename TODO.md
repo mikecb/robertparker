@@ -10,7 +10,8 @@
 
 ## Domains
 - [x] Similarity generation like dnstwist: `Permute` generates lookalike permutations.
-- [ ] Similarity lookup like dnstwist: resolve generated permutations to find which are registered.
+- [x] Similarity lookup like dnstwist: `LookalikeAnalyzer` finds which permutations exist, using DNS only.
+- [ ] Look up the domain registration of each lookalike and compare it to the canonical domain. If they differ, the lookalike is more likely to be malicious. RDAP is the modern way to get this, and registrant details are often redacted, so the registrar and registration date may be what's left to compare.
 - [ ] Extend the homoglyph table beyond Latin, so non-Latin labels get homoglyph permutations.
 
 ## Abuse

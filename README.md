@@ -18,6 +18,7 @@ I wrote it because I did not find a good library that performed these simple fun
 | `NewLimiter(concurrent int, perSecond float64) *Limiter` | Caps calls to an external service across all workers. See [Network calls](#network-calls). |
 | `EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer` | Checks a domain's SPF and DMARC records, and adds to `d.Findings`. See [Email checks](#email-checks). |
 | `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
+| `LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer` | Finds which permutations of a domain exist, and stores them in `d.Lookalikes`. See [Lookalike lookup](#lookalike-lookup). |
 | `Grade(d *Domain) string` | Works out letter grades from `d.Findings`. Stores them in `d.Grades` and `d.Grade`, and returns the overall one. See [Grades](#grades). |
 
 ### Domain
@@ -32,6 +33,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Entropy` | Set by `Entropy` |
 | `Permutations` | Set by `Permute` |
 | `Findings` | What the checks found. Left out of JSON if there are none |
+| `Lookalikes` | The permutations that exist, set by `LookalikeAnalyzer`. Left out of JSON if there are none |
+| `LookupFailures` | How many permutations couldn't be looked up, so `Lookalikes` may be missing some |
 | `Grades` | The letter grade for each area checked, set by `Grade`. Left out of JSON if there are none |
 | `Grade` | The overall letter grade, set by `Grade`. Left out of JSON if there isn't one |
 
@@ -156,6 +159,28 @@ To be able to report a broken certificate, it connects without verifying, then d
 
 A normal connection only shows the best a server offers, so a site that also allows old TLS versions or weak ciphers won't show here. The results are what a plain client gets, and a site can treat browsers differently. HSTS preloading isn't looked up, so a preloaded site that doesn't also send the header is reported as not having it.
 
+### Lookalike lookup
+
+`LookalikeAnalyzer` looks up each permutation of a domain, and keeps the ones that exist. It uses DNS only, and never connects to them: they may be malicious, and a request would tell their owner that someone is looking. `net.DefaultResolver` works as the `LookalikeResolver`.
+
+| `Lookalike` field | Meaning |
+| --- | --- |
+| `Fuzzer`, `Domain`, `ASCII` | The permutation, as in `Permutation` |
+| `Addresses`, `NameServers` | What it resolves to |
+| `MailServers` | Its mail servers. One that can receive mail is a strong sign of phishing, even with no website. A null MX doesn't count |
+| `SharedNameServers` | It has name servers from the same organization as the original, so it may be a defensive registration |
+| `BrokenDNS` | It's registered, but its name servers don't answer properly, so there's nothing else to report |
+
+A few things decide what counts as existing:
+
+- A name with no DNS records gets NXDOMAIN. A server failure means the name is delegated to servers that don't work, so it's registered, and is reported with `BrokenDNS`. To be sure it isn't the resolver failing, a random name is tested first.
+- Some suffixes answer for every name, which would make anything under them look registered. Each suffix is tested with a random name, and answers that match it don't count. This can miss a wildcard that gives different addresses each time.
+- Lookups that time out, even after retries, aren't guessed at. They're counted in `d.LookupFailures` and returned as an error, so a short list can be told apart from a clean one. Some of these are lookalikes with name servers too broken to even fail quickly.
+
+Each query has its own 5 second timeout, which starts after the limiter, since a domain has hundreds of queries and time spent waiting behind a rate limit doesn't mean anything is wrong.
+
+Only registered names are found, so expect a lot for a well-known brand: much of what's found will be defensive registrations and parking pages. `Lookalikes` shows what exists, not what's malicious, and doesn't affect grades.
+
 ### Grades
 
 Each area that was checked gets its own grade in `d.Grades`, and `d.Grade` is the worst of them, because a strong area doesn't make up for a weak one: good email settings don't help if the certificate has expired.
@@ -249,6 +274,11 @@ example.com  homoglyph      еxample.com     xn--xample-2of.com
 
 $ robertparker -permute -f domains.txt > permutations.jsonl
 
+$ robertparker -lookup -o text github.com
+DOMAIN      FUZZER    LOOKALIKE    ASCII        MAIL  SHARED-NS  BROKEN-DNS  ADDRESSES
+github.com  addition  githubb.com  githubb.com  yes   -          -           -
+...
+
 $ robertparker -checks email,tls,web -o text mozilla.org
 DOMAIN       GRADE  AREAS                SEVERITY  CHECK              MESSAGE
 mozilla.org  B      email=A,tls=A,web=B  info      dmarc-removed-tag  Uses the pct tag, which RFC 9989 removed.
@@ -261,11 +291,12 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | --- | --- |
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
+| `-lookup` | Find which permutations of each domain exist, using DNS only. It makes about 2 lookups per permutation, so roughly 400 per domain, which takes about 4 seconds at the default `-rate`. |
 | `-checks list` | Comma-separated areas to check and grade: `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, or per finding with `-checks`). Text can't show `-permute` and `-checks` together. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
-| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, or 64 with `-checks`, which mostly wait on the network. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, or per lookalike with `-lookup`). Text can't show `-checks` with `-permute` or `-lookup`. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 64 with `-checks`, which mostly wait on the network, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
-| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s. |
+| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, or 10m with `-lookup`, since most of its time is spent waiting behind `-rate`. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |
 | `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`, including for web requests. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
 )
@@ -62,8 +61,7 @@ func (c *emailChecker) txt(ctx context.Context, name string) ([]string, error) {
 		records, err = c.resolver.LookupTXT(ctx, name)
 		return err
 	})
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+	if isNotFound(err) {
 		return nil, nil
 	}
 	return records, err

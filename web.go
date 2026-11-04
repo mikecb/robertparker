@@ -153,8 +153,7 @@ func (w *webChecker) fetch(ctx context.Context, target string) ([]*webHop, error
 
 // unreachable reports whether err means there's nothing there, as opposed to something going wrong on the way to it.
 func unreachable(err error) bool {
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+	if isNotFound(err) {
 		return true
 	}
 	var opErr *net.OpError
