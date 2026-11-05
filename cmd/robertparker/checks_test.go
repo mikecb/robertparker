@@ -13,8 +13,24 @@ import (
 // fakeResolver answers from a map, and fails for the names in failing.
 type fakeResolver struct {
 	records map[string][]string
+	mx      map[string]string
 	failing map[string]bool
 	calls   atomic.Int64
+}
+
+func (f *fakeResolver) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
+	if host, ok := f.mx[name]; ok {
+		return []*net.MX{{Host: host}}, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (f *fakeResolver) LookupHost(_ context.Context, name string) ([]string, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (f *fakeResolver) LookupAddr(_ context.Context, addr string) ([]string, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: addr, IsNotFound: true}
 }
 
 func (f *fakeResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
@@ -37,12 +53,15 @@ func useResolver(t *testing.T, f *fakeResolver) {
 }
 
 func goodResolver() *fakeResolver {
-	return &fakeResolver{records: map[string][]string{
-		"good.com":        {"v=spf1 -all"},
-		"_dmarc.good.com": {"v=DMARC1; p=reject; rua=mailto:r@good.com"},
-		"weak.com":        {"v=spf1 ~all"},
-		"_dmarc.weak.com": {"v=DMARC1; p=none; rua=mailto:r@weak.com"},
-	}}
+	return &fakeResolver{
+		records: map[string][]string{
+			"good.com":        {"v=spf1 -all"},
+			"_dmarc.good.com": {"v=DMARC1; p=reject; rua=mailto:r@good.com"},
+			"weak.com":        {"v=spf1 ip4:192.0.2.1 ~all"},
+			"_dmarc.weak.com": {"v=DMARC1; p=none; rua=mailto:r@weak.com"},
+		},
+		mx: map[string]string{"good.com": "."},
+	}
 }
 
 func TestChecksJSON(t *testing.T) {
@@ -58,10 +77,10 @@ func TestChecksJSON(t *testing.T) {
 	if got[0].Grade != "A" || len(got[0].Findings) != 0 {
 		t.Errorf("good.com: %+v", got[0])
 	}
-	if got[1].Grade != "B" || len(got[1].Findings) != 1 || got[1].Findings[0].Check != "dmarc-policy" {
+	if got[1].Grade != "B" || len(got[1].Findings) != 2 || got[1].Findings[0].Check != "dmarc-policy" {
 		t.Errorf("weak.com: %+v", got[1])
 	}
-	if got[2].Grade != "F" || len(got[2].Findings) != 2 {
+	if got[2].Grade != "F" || len(got[2].Findings) != 3 {
 		t.Errorf("bare.com: %+v", got[2])
 	}
 }
@@ -73,8 +92,8 @@ func TestChecksText(t *testing.T) {
 		t.Fatalf("exit code %d", code)
 	}
 	rows := strings.Split(strings.TrimSpace(out), "\n")
-	if len(rows) != 3 {
-		t.Fatalf("want a header and 2 rows, got:\n%s", out)
+	if len(rows) != 4 {
+		t.Fatalf("want a header and 3 rows, got:\n%s", out)
 	}
 	if f := strings.Fields(rows[0]); strings.Join(f, " ") != "DOMAIN GRADE AREAS SEVERITY CHECK MESSAGE" {
 		t.Errorf("unexpected header %q", rows[0])

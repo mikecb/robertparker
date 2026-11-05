@@ -18,7 +18,12 @@ import (
 // fakeDNS is a Resolver backed by a map. A missing name is not found, like a real NXDOMAIN.
 type fakeDNS struct {
 	records map[string][]string
-	failing map[string]bool //Names whose lookups fail.
+	failing map[string]bool //Names whose TXT lookups fail.
+
+	mx          map[string][]string
+	hosts       map[string][]string
+	ptr         map[string][]string
+	lookupFails map[string]bool //Names whose MX, host, or reverse lookups fail.
 
 	mu      sync.Mutex
 	queries []string
@@ -40,14 +45,20 @@ func (f *fakeDNS) LookupTXT(ctx context.Context, name string) ([]string, error) 
 // goodDMARC is a record that adds no findings.
 const goodDMARC = "v=DMARC1; p=reject; rua=mailto:reports@example.com"
 
-// check runs the email checks on domain, and returns "severity check" for each finding, sorted.
+// check runs the email checks on domain, and returns "severity check" for each SPF and DMARC finding, sorted.
 func check(t *testing.T, dns *fakeDNS, domain string) []string {
 	t.Helper()
 	d := robertparker.NewDomain(domain)
-	if err := robertparker.EmailAnalyzer(dns, nil)(context.Background(), d); err != nil {
+	if err := robertparker.EmailAnalyzer(dns, nil, nil)(context.Background(), d); err != nil {
 		t.Fatalf("%s: %v", domain, err)
 	}
-	return summarize(d)
+	got := []string{}
+	for _, f := range summarize(d) {
+		if _, check, _ := strings.Cut(f, " "); strings.HasPrefix(check, "spf-") || strings.HasPrefix(check, "dmarc-") {
+			got = append(got, f)
+		}
+	}
+	return got
 }
 
 func summarize(d *robertparker.Domain) []string {
@@ -268,7 +279,7 @@ func TestDMARCTreeWalk(t *testing.T) {
 func TestDMARCTreeWalkLongNames(t *testing.T) {
 	dns := &fakeDNS{records: map[string][]string{}}
 	d := &robertparker.Domain{Secondary: "a.b.c.d.e.f.g.h.i.j.mail", Suffix: "example.com"}
-	robertparker.EmailAnalyzer(dns, nil)(context.Background(), d)
+	robertparker.EmailAnalyzer(dns, nil, nil)(context.Background(), d)
 	var dmarc []string
 	for _, q := range dns.queries {
 		if strings.HasPrefix(q, "_dmarc.") {
@@ -286,7 +297,7 @@ func TestEmailLookupFailureIsNotAMissingRecord(t *testing.T) {
 		t.Run(failing, func(t *testing.T) {
 			dns := &fakeDNS{records: good, failing: map[string]bool{failing: true}}
 			d := robertparker.NewDomain("example.com")
-			err := robertparker.EmailAnalyzer(dns, nil)(context.Background(), d)
+			err := robertparker.EmailAnalyzer(dns, nil, nil)(context.Background(), d)
 			if err == nil {
 				t.Error("want an error from the failed lookup")
 			}
@@ -315,7 +326,7 @@ func TestSPFIncludeLookupFailure(t *testing.T) {
 		failing: map[string]bool{"mail.example.org": true},
 	}
 	d := robertparker.NewDomain("example.com")
-	if err := robertparker.EmailAnalyzer(dns, nil)(context.Background(), d); err == nil {
+	if err := robertparker.EmailAnalyzer(dns, nil, nil)(context.Background(), d); err == nil {
 		t.Error("want an error from the failed lookup")
 	}
 	if g := robertparker.Grade(d); g != "" {
@@ -395,7 +406,7 @@ func TestEmailThroughProcess(t *testing.T) {
 	ctx := context.Background()
 	opts := robertparker.Options{
 		Workers:   16,
-		Analyzers: []robertparker.Analyzer{robertparker.EmailAnalyzer(dns, robertparker.NewLimiter(4, 0)), robertparker.GradeAnalyzer},
+		Analyzers: []robertparker.Analyzer{robertparker.EmailAnalyzer(dns, nil, robertparker.NewLimiter(4, 0)), robertparker.GradeAnalyzer},
 	}
 	for i, r := range collect(robertparker.Process(ctx, feed(ctx, in), opts)) {
 		want := "F"
@@ -420,7 +431,7 @@ func TestEmailTimeout(t *testing.T) {
 	ctx := context.Background()
 	opts := robertparker.Options{
 		Timeout:   20 * time.Millisecond,
-		Analyzers: []robertparker.Analyzer{robertparker.EmailAnalyzer(slowDNS{}, nil), robertparker.GradeAnalyzer},
+		Analyzers: []robertparker.Analyzer{robertparker.EmailAnalyzer(slowDNS{}, nil, nil), robertparker.GradeAnalyzer},
 	}
 	results := collect(robertparker.Process(ctx, feed(ctx, []string{"example.com"}), opts))
 	if len(results) != 1 || !errors.Is(results[0].Err, context.DeadlineExceeded) || results[0].Domain.Grade != "" {

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 )
 
-//Email checks: SPF here, and DMARC in dmarc.go. They only read public DNS records.
+//Email checks: SPF here, DMARC in dmarc.go, and the rest in mail.go. They read public DNS records, plus an MTA-STS policy
+//if there is one, and never connect to a mail server.
 
 const (
 	// AreaEmail is the area of the email checks.
@@ -23,29 +26,53 @@ const (
 // Resolver looks up DNS records. net.DefaultResolver is one, and tests use a fake.
 type Resolver interface {
 	LookupTXT(ctx context.Context, name string) ([]string, error)
+	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
+	LookupHost(ctx context.Context, host string) ([]string, error)
+	LookupAddr(ctx context.Context, addr string) ([]string, error)
 }
 
-// EmailAnalyzer returns an Analyzer that checks a domain's SPF and DMARC records, and adds Findings. It checks the
-// registrable domain, since that's where these records are normally published, not any subdomain that was given.
-// Every lookup goes through limiter, which can be nil. A lookup that fails, as opposed to finding nothing, adds a
-// SeverityUnknown finding and returns an error, so that a network problem is never reported as a missing record.
-func EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer {
+// EmailAnalyzer returns an Analyzer that checks a domain's mail servers and email authentication, and adds Findings. It
+// checks the registrable domain, since that's where these records are normally published, not any subdomain that was
+// given. client fetches MTA-STS policies, and can be nil. Every lookup goes through limiter, which can be nil. A lookup
+// that fails, as opposed to finding nothing, adds a SeverityUnknown finding and returns an error, so that a network
+// problem is never reported as a missing record.
+//
+// Newer protections that are simply missing, like MTA-STS, are only information. What costs a domain is one that's
+// present but broken, since that's what stops mail being delivered.
+func EmailAnalyzer(resolver Resolver, client *http.Client, limiter *Limiter) Analyzer {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return func(ctx context.Context, d *Domain) error {
 		name := d.registrable()
 		if name == "" {
 			return nil
 		}
 		d.Checked(AreaEmail)
-		c := emailChecker{resolver: resolver, limiter: limiter, domain: d}
-		return errors.Join(c.checkSPF(ctx, name), c.checkDMARC(ctx, name))
+		c := emailChecker{resolver: resolver, client: client, limiter: limiter, domain: d}
+		errs := []error{c.checkMX(ctx, name), c.checkSPF(ctx, name), c.checkDMARC(ctx, name)}
+		c.checkParked()
+		errs = append(errs, c.checkMTASTS(ctx, name), c.checkTLSRPT(ctx, name), c.checkDKIM(ctx, name))
+		return errors.Join(errs...)
 	}
 }
 
 // emailChecker is the state of checking one domain.
 type emailChecker struct {
 	resolver Resolver
+	client   *http.Client
 	limiter  *Limiter
 	domain   *Domain
+
+	// What earlier checks found, for later ones to use.
+	mxKnown      bool     //checkMX finished.
+	mxHosts      []string //The mail servers, in lowercase.
+	nullMX       bool     //The domain says it takes no mail.
+	spfKnown     bool     //There was at most one SPF record, and it could be read.
+	spfSenders   bool     //The SPF record authorizes someone to send.
+	spfAll       string   //The qualifier that ends the SPF record.
+	dmarcPolicy  string   //The DMARC policy for the domain, if there's a usable one.
+	dmarcChecked bool     //checkDMARC finished.
 }
 
 // add records a finding about the domain's email.
@@ -91,6 +118,7 @@ func (c *emailChecker) checkSPF(ctx context.Context, name string) error {
 	}
 	switch len(records) {
 	case 0:
+		c.spfKnown = true
 		c.add("spf-record", SeverityFailure, rfcSPF, "No SPF record, so anyone can claim to send mail from this domain.")
 		return nil
 	case 1:
@@ -104,6 +132,7 @@ func (c *emailChecker) checkSPF(ctx context.Context, name string) error {
 		c.add("spf-lookups", SeverityUnknown, rfcSPF, fmt.Sprintf("Couldn't follow the includes of %s: %v", name, err))
 		return fmt.Errorf("SPF lookup: %w", err)
 	}
+	c.spfKnown, c.spfSenders, c.spfAll = true, w.senders, w.all
 	if w.syntaxError != "" {
 		c.add("spf-syntax", SeverityFailure, rfcSPF, w.syntaxError)
 	}
@@ -134,6 +163,7 @@ type spfWalk struct {
 	seen        map[string]bool //Domains already followed, since includes can form loops.
 	lookups     int             //Terms that need a DNS query.
 	usesPtr     bool
+	senders     bool     //Something in the record authorizes a sender.
 	syntaxError string   //The first syntax error in the record being checked.
 	broken      []string //Includes and redirects that don't lead to one SPF record.
 	all         string   //The qualifier of the "all" that ends the policy, or "" if there isn't one.
@@ -151,6 +181,12 @@ func (w *spfWalk) walk(ctx context.Context, name, record string) error {
 				w.syntaxError = fmt.Sprintf("Invalid SPF term in %s: %v", name, err)
 			}
 			continue
+		}
+		switch t.name {
+		case "include", "a", "mx", "exists", "ptr", "ip4", "ip6":
+			w.senders = w.senders || t.qualifier != "-"
+		case "redirect":
+			w.senders = true
 		}
 		switch t.name {
 		case "include":
