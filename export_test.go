@@ -1,10 +1,21 @@
 package robertparker
 
+import "context"
+
 // PlainRegistrable exports plainRegistrable to the tests.
 var PlainRegistrable = plainRegistrable
 
 // SystemDNSServer exports systemDNSServer to the tests.
 var SystemDNSServer = systemDNSServer
+
+// ProbeTLS runs the prober on its own.
+func ProbeTLS(ctx context.Context, config WebConfig, d *Domain, host string) error {
+	if config.ProbeTimeout == 0 {
+		config.ProbeTimeout = probeTimeout
+	}
+	w := webChecker{config: config, domain: d}
+	return w.probeTLS(ctx, host)
+}
 
 // ReadName exports readName to the tests.
 var ReadName = readName

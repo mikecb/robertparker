@@ -62,9 +62,10 @@ const (
 	// time waiting behind -rate, so this only catches something stuck. Each lookup has its own short timeout.
 	lookupTimeout = 10 * time.Minute
 
-	// dnsTimeout is the default for -timeout with -checks dns. A domain takes about 45 queries, so with the default
-	// -workers and -rate, it can spend 7 seconds of this waiting behind -rate, which left 10 seconds too short.
-	dnsTimeout = 30 * time.Second
+	// thoroughTimeout is the default for -timeout with -checks dns or tls-probe. With dns, a domain takes about 45 queries,
+	// so with the default -workers and -rate, it can spend 7 seconds of this waiting behind -rate. With tls-probe, a server
+	// that doesn't reply to its 10 connections takes 12 seconds. Either way, 10 seconds is too short.
+	thoroughTimeout = 30 * time.Second
 )
 
 // resolver does the DNS lookups for -checks, lookalikes those for -lookup, and registrations the lookups for
@@ -137,7 +138,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
-	checks := fs.String("checks", "", "comma-separated `list` of areas to check and grade: dns, email, tls, web. These make DNS lookups and web requests")
+	checks := fs.String("checks", "", "comma-separated `list` of areas to check and grade: dns, email, tls, web, or tls-probe, which adds to tls by offering servers old protocols and weak ciphers. These make DNS lookups and web requests")
 	timeout := fs.Duration("timeout", 10*time.Second, "`time` allowed for the checks on one domain")
 	rate := fs.Float64("rate", 100, "DNS lookups and web requests per `second`, or 0 for no limit")
 	dnsServer := fs.String("resolver", "", "DNS server to use, as `host` or host:port, instead of the system's")
@@ -165,6 +166,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 				email = true
 			case robertparker.AreaTLS:
 				web.TLS = true
+			case robertparker.CheckTLSProbe:
+				web.TLS, web.Probe = true, true
 			case robertparker.AreaWeb:
 				web.Web = true
 			default:
@@ -263,8 +266,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 		}
 		opts.Timeout = *timeout
-		if dnsChecks && !set["timeout"] {
-			opts.Timeout = dnsTimeout
+		if (dnsChecks || web.Probe) && !set["timeout"] {
+			opts.Timeout = thoroughTimeout
 		}
 		if *lookup {
 			opts.Analyzers = append(opts.Analyzers, robertparker.LookalikeAnalyzer(names, limiter))

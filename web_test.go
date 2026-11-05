@@ -249,17 +249,17 @@ func TestWebChecks(t *testing.T) {
 		{
 			"TLS 1.2",
 			testSite{tlsConfig: func(c *tls.Config) { c.MaxVersion = tls.VersionTLS12 }},
-			[]string{"info tls-post-quantum", "info tls-version"},
+			[]string{"info tls-version", "warning tls-post-quantum"},
 		},
 		{
 			"TLS 1.0",
 			testSite{tlsConfig: func(c *tls.Config) { c.MinVersion, c.MaxVersion = tls.VersionTLS10, tls.VersionTLS10 }},
-			[]string{"failure tls-version", "info tls-post-quantum", "warning tls-cipher"},
+			[]string{"failure tls-version", "warning tls-cipher", "warning tls-post-quantum"},
 		},
 		{
 			"no post-quantum",
 			testSite{tlsConfig: func(c *tls.Config) { c.CurvePreferences = []tls.CurveID{tls.X25519} }},
-			[]string{"info tls-post-quantum"},
+			[]string{"warning tls-post-quantum"},
 		},
 
 		{"no redirect", testSite{plain: func(http.ResponseWriter, *http.Request) {}}, []string{"warning web-https-redirect"}},

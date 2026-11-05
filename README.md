@@ -150,7 +150,7 @@ DANE isn't checked yet. When it is, it'll be reported but won't earn a better gr
 
 ### TLS and Web checks
 
-`WebAnalyzer` makes ordinary requests to a site, like a browser would, and doesn't probe for anything. It checks the host as given, since each host is its own site, and a registrable domain that isn't reachable gets a second try at `www`. Set `TLS` and `Web` in its `WebConfig` to choose the areas. Both come from the same requests.
+`WebAnalyzer` makes ordinary requests to a site, like a browser would, and doesn't probe for anything, unless `Probe` is set (see [Probing TLS](#probing-tls)). It checks the host as given, since each host is its own site, and a registrable domain that isn't reachable gets a second try at `www`. Set `TLS` and `Web` in its `WebConfig` to choose the areas. Both come from the same requests.
 
 | Check | What it looks for |
 | --- | --- |
@@ -158,7 +158,7 @@ DANE isn't checked yet. When it is, it'll be reported but won't earn a better gr
 | `tls-handshake` | The TLS connection works |
 | `tls-version` | TLS 1.2 or later, noting TLS 1.2 as information |
 | `tls-cipher` | A forward-secret AEAD cipher |
-| `tls-post-quantum` | X25519MLKEM768 key exchange, as information |
+| `tls-post-quantum` | X25519MLKEM768 key exchange. Missing it is a warning, because traffic recorded today could be decrypted by a future quantum computer, and most of the sites sampled already use it |
 | `tls-expiry` | Not expired, or expiring within the last tenth of its lifetime |
 | `tls-hostname` | The certificate is valid for the host |
 | `tls-chain` | The certificate chains to a trusted root |
@@ -182,6 +182,26 @@ DANE isn't checked yet. When it is, it'll be reported but won't earn a better gr
 To be able to report a broken certificate, it connects without verifying, then does the verification itself, so each problem gets its own finding. Nothing sensitive is ever sent.
 
 A normal connection only shows the best a server offers, so a site that also allows old TLS versions or weak ciphers won't show here. The results are what a plain client gets, and a site can treat browsers differently. HSTS preloading isn't looked up, so a preloaded site that doesn't also send the header is reported as not having it.
+
+### Probing TLS
+
+A normal connection only shows the best thing a server will do, so a server that also accepts TLS 1.0 or RC4 looks fine. With `Probe` set in `WebConfig`, or `-checks tls-probe`, `WebAnalyzer` also offers a server what it shouldn't accept, and adds to the `tls` area. These are hand-built ClientHellos, because Go's `crypto/tls` can't offer most of this. Each one only reads the server's reply and hangs up, so no handshake finishes.
+
+This is off unless asked for, because it sends what a normal client wouldn't, and this tool may be run on domains the user doesn't own. It makes 10 connections to a site, at most 3 at a time.
+
+| Check | Severity | What it looks for |
+| --- | --- | --- |
+| `tls-legacy` | Warning | SSL 3.0, TLS 1.0, or TLS 1.1 is accepted (RFC 8996), or 3DES, or RSA key exchange, which isn't forward secret |
+| `tls-cipher-broken` | Failure | NULL, export, or RC4 ciphers are accepted |
+| `tls-cipher-cbc` | Information | CBC ciphers are accepted |
+| `tls-compression` | Failure | TLS compression is accepted, which allows the CRIME attack |
+| `tls-renegotiation` | Warning | No secure renegotiation (RFC 5746) |
+
+`tls-legacy` is a warning, not a failure, because modern clients refuse these, so they only reach old devices, and sites keep them for those on purpose, including `google.com` and `cloudflare.com`. All of it is one choice, so it costs once, however many of them a site accepts. CBC is only information because more than half of the sites sampled accept it.
+
+A server that hangs up or stays silent is taken as saying no, since plenty of servers do that instead of sending an alert. The first offer is a reasonable one, and if there's no reply to that, nothing else can be believed, so it's a `SeverityUnknown` finding and the area gets no grade. The same goes for not being able to connect, or running out of time.
+
+Each group of ciphers is offered together, so this shows whether a server accepts any of a group, not which ones. It only looks at port 443, and doesn't test for vulnerabilities in particular servers.
 
 ### Lookalike lookup
 
@@ -397,11 +417,11 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-registration` | Also compare each lookalike's registration with the original's, and rank them. Implies `-lookup`. It makes a request per lookalike at up to 10 a second per registry, so a well-known domain takes about 30 seconds in all. |
 | `-suspicious` | Only show lookalikes ranked `medium` or `high`. Implies `-registration`. |
 | `-records` | Collect each domain's DNS records. |
-| `-checks list` | Comma-separated areas to check and grade: `dns`, `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
+| `-checks list` | Comma-separated areas to check and grade: `dns`, `email`, `tls`, and `web`. `tls-probe` is `tls` plus [offering servers old protocols and weak ciphers](#probing-tls). Off by default, since they make DNS lookups and web requests. |
 | `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, per record with `-records`, or per lookalike with `-lookup` or `-registration`). Text can only show one of those at a time, but JSON can hold them all. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks` or `-records`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
-| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, 30s with `-checks dns`, or 10m with `-lookup`, since most of their time is spent waiting behind `-rate`. |
+| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, 30s with `-checks dns` or `tls-probe`, or 10m with `-lookup`, since most of their time is spent waiting behind `-rate` or on servers that stay silent. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |
 | `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`, including for web requests. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 
