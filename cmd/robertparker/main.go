@@ -84,6 +84,7 @@ var (
 	lookalikeView   = textView{"DOMAIN\tFUZZER\tLOOKALIKE\tASCII\tMAIL\tSHARED-NS\tBROKEN-DNS\tADDRESSES", writeLookalikes}
 
 	registrationView = textView{"DOMAIN\tSUSPICION\tLOOKALIKE\tASCII\tREGISTRAR\tREGISTERED\tREASONS", writeRegistrations}
+	recordView       = textView{"DOMAIN\tTYPE\tVALUE", writeRecords}
 )
 
 // webDial makes the connections for -checks tls and web, if set. Tests replace it.
@@ -126,12 +127,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	file := fs.String("f", "", "read domains from `file`, one per line (- for stdin)")
 	permute := fs.Bool("permute", false, "generate lookalike permutations of each domain")
 	lookup := fs.Bool("lookup", false, "find which permutations of each domain exist, using DNS only")
+	records := fs.Bool("records", false, "collect each domain's DNS records")
 	registration := fs.Bool("registration", false, "compare each lookalike's registration with the original's, and rank them (implies -lookup)")
 	suspicious := fs.Bool("suspicious", false, "only show lookalikes ranked medium or high (implies -registration)")
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
-	checks := fs.String("checks", "", "comma-separated `list` of checks to run: email, tls, web. These make DNS lookups and web requests")
+	checks := fs.String("checks", "", "comma-separated `list` of areas to check and grade: dns, email, tls, web. These make DNS lookups and web requests")
 	timeout := fs.Duration("timeout", 10*time.Second, "`time` allowed for the checks on one domain")
 	rate := fs.Float64("rate", 100, "DNS lookups and web requests per `second`, or 0 for no limit")
 	dnsServer := fs.String("resolver", "", "DNS server to use, as `host` or host:port, instead of the system's")
@@ -149,10 +151,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintf(stderr, "robertparker: -workers must be at least 1\n")
 		return 2
 	}
-	email, web := false, robertparker.WebConfig{DialContext: webDial}
+	dnsChecks, email, web := false, false, robertparker.WebConfig{DialContext: webDial}
 	if *checks != "" {
 		for _, c := range strings.Split(*checks, ",") {
 			switch c {
+			case robertparker.AreaDNS:
+				dnsChecks = true
 			case robertparker.AreaEmail:
 				email = true
 			case robertparker.AreaTLS:
@@ -167,9 +171,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	*registration = *registration || *suspicious
 	*lookup = *lookup || *registration
-	checking := email || web.TLS || web.Web
-	if checking && (*permute || *lookup) && *format == "text" {
-		fmt.Fprintln(stderr, "robertparker: -o text can show -permute, -lookup, or -checks, not both")
+	checking := dnsChecks || email || web.TLS || web.Web
+	views := 0
+	for _, shown := range []bool{*permute || *lookup, checking, *records} {
+		if shown {
+			views++
+		}
+	}
+	if views > 1 && *format == "text" {
+		fmt.Fprintln(stderr, "robertparker: -o text can show -permute or -lookup, -checks, or -records, not both")
 		return 2
 	}
 
@@ -207,7 +217,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		opts.Analyzers = append(opts.Analyzers, robertparker.PermuteAnalyzer)
 		view = permutationView
 	}
-	if checking || *lookup {
+	if checking || *lookup || *records {
 		set := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		dns, names, source := resolver, lookalikes, registrations
@@ -225,6 +235,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 		}
 		limiter := robertparker.NewLimiter(limiterConcurrency, *rate)
+		if *records {
+			opts.Analyzers = append(opts.Analyzers, robertparker.RecordsAnalyzer(*dnsServer, limiter))
+			view = recordView
+			if !set["workers"] {
+				opts.Workers = networkWorkers
+			}
+		}
+		if dnsChecks {
+			opts.Analyzers = append(opts.Analyzers, robertparker.DNSAnalyzer(*dnsServer, limiter))
+		}
 		if email {
 			opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, client, limiter))
 		}
@@ -405,6 +425,20 @@ func writeLookalikes(w io.Writer, d *robertparker.Domain) {
 	}
 	for _, l := range d.Lookalikes {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.FQDN, l.Fuzzer, l.Domain, l.ASCII, yes(len(l.MailServers) > 0), yes(l.SharedNameServers), yes(l.BrokenDNS), orDash(strings.Join(l.Addresses, ",")))
+	}
+}
+
+// writeRecords writes one row per DNS record, sorted by type.
+func writeRecords(w io.Writer, d *robertparker.Domain) {
+	types := make([]string, 0, len(d.Records))
+	for t := range d.Records {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	for _, t := range types {
+		for _, value := range d.Records[t] {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", d.FQDN, t, value)
+		}
 	}
 }
 
