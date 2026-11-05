@@ -228,6 +228,13 @@ A type that can't be looked up is counted in `d.RecordFailures` and returned as 
 | `dns-ns-resolve` | RFC 2182 | Each name server resolves |
 | `dns-ns-cname` | RFC 2181 | Name servers aren't CNAMEs |
 | `dns-ns-ipv6` | | No name server has an IPv6 address, as information |
+| `dns-ns-lame` | RFC 1034 | Each name server answers for the zone with authority, so there's no lame delegation |
+| `dns-ns-respond` | RFC 1034 | Each name server replies. No reply is only a warning, since something on the way could have dropped the query |
+| `dns-ns-parent` | RFC 1034 | The parent zone and the name servers list the same name servers |
+| `dns-ns-serial` | RFC 1034 | Name servers under one domain have the same SOA serial. Across domains, a difference is information, since each DNS provider numbers a zone separately |
+| `dns-ns-tcp` | RFC 7766 | Each name server answers over TCP |
+| `dns-ns-ipv6-answer` | | Each name server with an IPv6 address answers on it |
+| `dns-ns-untested` | | TCP or IPv6 doesn't work from here, as information |
 | `dns-soa` | RFC 1912 | There's an SOA record |
 | `dns-soa-timers` | RFC 1912 | Retry isn't longer than refresh, and expire is at least the two together. Being outside the suggested ranges is information, since many well-run zones are |
 | `dns-address` | RFC 6890 | The A and AAAA records aren't private, loopback, or link-local addresses |
@@ -243,9 +250,13 @@ DNSSEC never earns credit, given its reliability problems. A zone gets the same 
 
 Queries ask a validating resolver for the records even when DNSSEC fails, because otherwise a broken chain looks the same as a server that's down.
 
-The checks read records through a resolver, so they see what everyone else sees, but they don't ask a domain's name servers anything directly. That means they can't compare the name servers with each other or with the parent zone, and a name server that resolves may still not answer. TXT is left to the email checks, and HTTPS and SVCB are optional, so they aren't graded.
+Most checks read records through a resolver, so they see what everyone else sees. A resolver hides a broken name server for as long as another one works, so the `dns-ns-` checks also ask each server directly, and ask the zone above for its delegation. These are the same non-recursive queries a resolver sends. TXT is left to the email checks, and HTTPS and SVCB are optional, so they aren't graded.
+
+Direct queries only say something about a name server if they can get out, and many networks block them, or have no IPv6. The zone above is used to see what works from here, so a machine with no IPv6 doesn't make every name server look broken. If no name server can be asked at all, that's more likely the network than the domain, since the domain did resolve, so the area gets no grade. Name servers at private or loopback addresses are reported, and never sent a query, so a list of domains can't reach machines on the local network.
 
 A lookup that fails is reported as a `SeverityUnknown` finding and an error, and the area gets no grade.
+
+A domain takes about 45 queries, so with the default `-rate`, about 2 domains are checked per second, whatever `-workers` is. For long lists, raise `-rate`. Serials can differ briefly while a zone is changing, so a busy zone can get `dns-ns-serial` on one run and not the next.
 
 ### Ranking lookalikes
 
@@ -271,7 +282,7 @@ Registrations come from a `RegistrationSource`. `RDAP` is one, which asks each r
 
 Each area that was checked gets its own grade in `d.Grades`, and `d.Grade` is the worst of them, because a strong area doesn't make up for a weak one: good email settings don't help if the certificate has expired.
 
-An area starts at 100, and loses 40 for a failure and 15 for a warning, or 10 for a warning in `web`, which has many more checks and more of them about hardening. Each check costs once, at its worst, however many ways it found a problem. Information findings cost nothing. 90 or more is an A, 80 a B, 70 a C, 60 a D, and anything lower an F.
+An area starts at 100, and loses 40 for a failure and 15 for a warning, or 10 for a warning in `web` and `dns`, which have many more checks and more of them about hardening. Each check costs once, at its worst, however many ways it found a problem. Information findings cost nothing. 90 or more is an A, 80 a B, 70 a C, 60 a D, and anything lower an F.
 
 An area that doesn't apply, like `web` on a domain with no web server, gets no grade, rather than credit for having nothing wrong. An area where a check couldn't finish gets no grade either, since it would be a guess, and then there's no overall grade. Run `GradeAnalyzer` after the analyzers that add findings.
 
@@ -390,7 +401,7 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, per record with `-records`, or per lookalike with `-lookup` or `-registration`). Text can only show one of those at a time, but JSON can hold them all. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks` or `-records`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
-| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, or 10m with `-lookup`, since most of its time is spent waiting behind `-rate`. |
+| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, 30s with `-checks dns`, or 10m with `-lookup`, since most of their time is spent waiting behind `-rate`. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |
 | `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`, including for web requests. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 

@@ -65,17 +65,20 @@ func healthyZone() map[string][]dnsmessage.ResourceBody {
 		"ns1.example.net. TypeAAAA": {
 			&dnsmessage.AAAAResource{AAAA: ipv6},
 		},
+		"com. TypeNS":             nsAt("a.tld.example."),
+		"a.tld.example. TypeA":    ipv4(192, 0, 2, 53),
+		"a.tld.example. TypeAAAA": {&dnsmessage.AAAAResource{AAAA: [16]byte{0x20, 0x01, 0x0d, 0xb8, 15: 0x53}}},
 	}
 }
 
-// checkDNS runs the checks on example.com against records, and grades it.
+// checkDNS runs the checks on example.com, with s as the resolver and every name server, and grades it.
 func checkDNS(t *testing.T, s *dnsServer) (*robertparker.Domain, error) {
 	t.Helper()
 	address := startDNS(t, s)
 	d := robertparker.NewDomain("example.com")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := robertparker.DNSAnalyzer(address, nil)(ctx, d)
+	err := robertparker.DNSAnalyzerRouted(address, nil, func(string) string { return address })(ctx, d)
 	robertparker.Grade(d)
 	return d, err
 }
@@ -125,28 +128,28 @@ func TestDNSChecks(t *testing.T) {
 	}{
 		{"one name server", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneNS] = nsAt("ns1.example.net.")
-		}, "dns-ns-count", warning, "B"},
+		}, "dns-ns-count", warning, "A"},
 		{"name servers on one network", func(z map[string][]dnsmessage.ResourceBody) {
 			z["ns1.example.net. TypeA"] = ipv4(203, 0, 113, 2)
-		}, "dns-ns-network", warning, "B"},
+		}, "dns-ns-network", warning, "A"},
 		{"name server that doesn't resolve", func(z map[string][]dnsmessage.ResourceBody) {
 			delete(z, "ns2.example.org. TypeA")
 		}, "dns-ns-resolve", failure, "D"},
 		{"name server that's a CNAME", func(z map[string][]dnsmessage.ResourceBody) {
 			z["ns1.example.net. TypeA"] = append([]dnsmessage.ResourceBody{&dnsmessage.CNAMEResource{CNAME: name("other.example.net.")}}, z["ns1.example.net. TypeA"]...)
-		}, "dns-ns-cname", warning, "B"},
+		}, "dns-ns-cname", warning, "A"},
 		{"no IPv6 on the name servers", func(z map[string][]dnsmessage.ResourceBody) {
 			delete(z, "ns1.example.net. TypeAAAA")
 		}, "dns-ns-ipv6", info, "A"},
-		{"no SOA", func(z map[string][]dnsmessage.ResourceBody) {
+		{"no SOA on any server", func(z map[string][]dnsmessage.ResourceBody) {
 			delete(z, zoneSOA)
-		}, "dns-soa", failure, "D"},
+		}, "dns-soa", failure, "F"},
 		{"SOA retry longer than refresh", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneSOA] = soaWith(3600, 7200, 1209600, 3600)
-		}, "dns-soa-timers", warning, "B"},
+		}, "dns-soa-timers", warning, "A"},
 		{"SOA expire too short", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneSOA] = soaWith(3600, 900, 1800, 3600)
-		}, "dns-soa-timers", warning, "B"},
+		}, "dns-soa-timers", warning, "A"},
 		// The timers of large, well-run zones, which are outside RFC 1912's ranges and shouldn't cost anything.
 		{"short timers that agree", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneSOA] = soaWith(900, 900, 1800, 60)
@@ -156,22 +159,22 @@ func TestDNSChecks(t *testing.T) {
 		}, "dns-soa-timers", info, "A"},
 		{"private address", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneA] = ipv4(10, 0, 0, 1)
-		}, "dns-address", warning, "B"},
+		}, "dns-address", warning, "A"},
 		{"loopback address", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneA] = ipv4(127, 0, 0, 1)
-		}, "dns-address", warning, "B"},
+		}, "dns-address", warning, "A"},
 		{"mail server that's a CNAME", func(z map[string][]dnsmessage.ResourceBody) {
 			z["mail.example.com. TypeA"] = append([]dnsmessage.ResourceBody{&dnsmessage.CNAMEResource{CNAME: name("mail.example.net.")}}, ipv4(192, 0, 2, 25)...)
-		}, "dns-mx-cname", warning, "B"},
+		}, "dns-mx-cname", warning, "A"},
 		{"no CAA", func(z map[string][]dnsmessage.ResourceBody) {
 			delete(z, zoneCAA)
-		}, "dns-caa", warning, "B"},
+		}, "dns-caa", warning, "A"},
 		{"CAA with only a report address", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneCAA] = []dnsmessage.ResourceBody{caa(0, "iodef", "mailto:a@example.com")}
-		}, "dns-caa", warning, "B"},
+		}, "dns-caa", warning, "A"},
 		{"CAA with only wildcards", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneCAA] = []dnsmessage.ResourceBody{caa(0, "issuewild", ";")}
-		}, "dns-caa", warning, "B"},
+		}, "dns-caa", warning, "A"},
 		{"CAA with a critical property CAs don't know", func(z map[string][]dnsmessage.ResourceBody) {
 			z[zoneCAA] = append(z[zoneCAA], caa(128, "madeup", "x"))
 		}, "dns-caa-critical", failure, "D"},
@@ -260,11 +263,14 @@ func dsFor(key []byte, algorithm byte, weak bool) *dnsmessage.UnknownResource {
 }
 
 func TestDNSSECEarnsNoCredit(t *testing.T) {
-	// A warning leaves room to go up, if signing were to earn anything.
-	unsigned := healthyZone()
-	delete(unsigned, zoneCAA)
-	signed := healthyZone()
-	delete(signed, zoneCAA)
+	// Two warnings leave room to go up, if signing were to earn anything.
+	flawed := func() map[string][]dnsmessage.ResourceBody {
+		zone := healthyZone()
+		delete(zone, zoneCAA)
+		zone[zoneA] = ipv4(10, 0, 0, 1)
+		return zone
+	}
+	unsigned, signed := flawed(), flawed()
 	key, data := signedKey(13)
 	signed[zoneDNSKEY] = []dnsmessage.ResourceBody{key}
 	signed[zoneDS] = []dnsmessage.ResourceBody{dsFor(data, 13, false)}
@@ -301,9 +307,9 @@ func TestDNSSECProblems(t *testing.T) {
 		{"DS with no keys", keys(dsFor(data, 13, false)), nil, "dnssec-chain", robertparker.SeverityFailure, "D"},
 		{"DS that matches no key", keys(other), keys(key), "dnssec-chain", robertparker.SeverityFailure, "D"},
 		{"one DS of two matches", []dnsmessage.ResourceBody{other, dsFor(data, 13, false)}, keys(key), "dnssec-status", robertparker.SeverityInfo, "A"},
-		{"SHA-1 digest", keys(dsFor(data, 13, true)), keys(key), "dnssec-ds-digest", robertparker.SeverityWarning, "B"},
+		{"SHA-1 digest", keys(dsFor(data, 13, true)), keys(key), "dnssec-ds-digest", robertparker.SeverityWarning, "A"},
 		{"SHA-1 digest beside SHA-256", []dnsmessage.ResourceBody{dsFor(data, 13, true), dsFor(data, 13, false)}, keys(key), "dnssec-status", robertparker.SeverityInfo, "A"},
-		{"deprecated algorithm", keys(dsFor(oldData, 5, false)), keys(oldKey), "dnssec-algorithm", robertparker.SeverityWarning, "B"},
+		{"deprecated algorithm", keys(dsFor(oldData, 5, false)), keys(oldKey), "dnssec-algorithm", robertparker.SeverityWarning, "A"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -464,7 +470,7 @@ func TestDNSChecksTheRegistrableDomain(t *testing.T) {
 	d := robertparker.NewDomain("mail.example.com")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := robertparker.DNSAnalyzer(address, nil)(ctx, d); err != nil {
+	if err := robertparker.DNSAnalyzerRouted(address, nil, func(string) string { return address })(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	if robertparker.Grade(d) != "A" {

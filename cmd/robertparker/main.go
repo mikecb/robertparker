@@ -61,6 +61,10 @@ const (
 	// lookupTimeout is the default for -timeout with -lookup. A domain has hundreds of lookups, and spends most of its
 	// time waiting behind -rate, so this only catches something stuck. Each lookup has its own short timeout.
 	lookupTimeout = 10 * time.Minute
+
+	// dnsTimeout is the default for -timeout with -checks dns. A domain takes about 45 queries, so with the default
+	// -workers and -rate, it can spend 7 seconds of this waiting behind -rate, which left 10 seconds too short.
+	dnsTimeout = 30 * time.Second
 )
 
 // resolver does the DNS lookups for -checks, lookalikes those for -lookup, and registrations the lookups for
@@ -259,6 +263,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 		}
 		opts.Timeout = *timeout
+		if dnsChecks && !set["timeout"] {
+			opts.Timeout = dnsTimeout
+		}
 		if *lookup {
 			opts.Analyzers = append(opts.Analyzers, robertparker.LookalikeAnalyzer(names, limiter))
 			view = lookalikeView
