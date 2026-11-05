@@ -201,6 +201,8 @@ Each query has its own 5 second timeout, which starts after the limiter, since a
 
 Only registered names are found, so expect a lot for a well-known brand: much of what's found will be defensive registrations and parking pages. `Lookalikes` shows what exists, not what's malicious, and doesn't affect grades.
 
+This finds squatters on typos of a domain. It doesn't find most phishing, which rarely looks like a typo: `Permute` could generate only 0.1% of the phishing domains naming a major brand in [this evaluation](docs/lookalike-evaluation.md).
+
 ### Ranking lookalikes
 
 `RegistrationAnalyzer` goes after `LookalikeAnalyzer`. It looks up the registration of the domain and of each lookalike, compares them, and sorts `d.Lookalikes` with the most suspicious first. Each lookalike gets its `Registrar`, `Registered` date, `SameRegistrar`, and a `Suspicion` with the `Reasons` for it.
@@ -217,7 +219,7 @@ Each sign counts for points, so that no one thing decides:
 
 `unknown` means there's nothing to compare, which says nothing either way. That's a registry with no RDAP server, a name under a private suffix like `appspot.com`, or a lookup that failed. Failures are counted in `d.RegistrationFailures` and returned as an error.
 
-`Suspicion` is a way to sort lookalikes, and doesn't prove anything. The points are judgement, tuned by looking at 20 well-known domains, where about a tenth of lookalikes came out `high`. An old domain taken over or re-registered can look innocent or suspicious, and a recent one may be harmless.
+`Suspicion` is a way to sort lookalikes, and doesn't prove anything. The points are judgement, tuned by looking at 20 well-known domains, where about a tenth of lookalikes came out `high`. In a small test, real phishing domains were about three times as likely to rate `high` as ordinary lookalikes, but most still didn't, so a low rating doesn't clear a domain. See the [evaluation](docs/lookalike-evaluation.md). An old domain taken over or re-registered can look innocent or suspicious, and a recent one may be harmless.
 
 Registrations come from a `RegistrationSource`. `RDAP` is one, which asks each registry's server using IANA's list, at up to 10 requests a second per server, and waits when a server says it's getting too many. Registries that aren't on that list have no data, which at the time of writing includes `.io`, `.co`, `.de`, and `.us`.
 
