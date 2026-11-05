@@ -164,13 +164,20 @@ func TestLookalikesNullMX(t *testing.T) {
 
 func TestLookalikesSharedNameServers(t *testing.T) {
 	f := &fakeLookalikes{ns: map[string][]string{
-		"example.com": {"ns1.dns-host.example."},
-		"exmaple.com": {"ns2.dns-host.example."},
-		"exampel.com": {"ns1.someone-else.example."},
+		"example.com": {"alice.ns.host.example.", "bob.ns.host.example."},
+		"exmaple.com": {"bob.ns.host.example."},                             // A subset of the original's.
+		"exampel.com": {"carol.ns.host.example.", "dave.ns.host.example."},  // Same provider, but a different account.
+		"exapmle.com": {"alice.ns.host.example.", "carol.ns.host.example."}, // One in common can be chance.
+		"exampl.com":  {"ns1.someone-else.example."},
 	}}
 	d := lookup(t, f, "example.com")
-	if len(d.Lookalikes) != 2 || !d.Lookalikes[0].SharedNameServers || d.Lookalikes[1].SharedNameServers {
-		t.Errorf("got %+v", d.Lookalikes)
+	shared := map[string]bool{}
+	for _, l := range d.Lookalikes {
+		shared[l.ASCII] = l.SharedNameServers
+	}
+	want := map[string]bool{"exmaple.com": true, "exampel.com": false, "exapmle.com": false, "exampl.com": false}
+	if !reflect.DeepEqual(shared, want) {
+		t.Errorf("got %v, want %v", shared, want)
 	}
 }
 

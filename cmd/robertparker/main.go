@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -57,10 +59,12 @@ const (
 	lookupTimeout = 10 * time.Minute
 )
 
-// resolver does the DNS lookups for -checks, and lookalikes for -lookup. Tests replace them.
+// resolver does the DNS lookups for -checks, lookalikes those for -lookup, and registrations the lookups for
+// -registration. Tests replace them.
 var (
-	resolver   robertparker.Resolver          = net.DefaultResolver
-	lookalikes robertparker.LookalikeResolver = net.DefaultResolver
+	resolver      robertparker.Resolver           = net.DefaultResolver
+	lookalikes    robertparker.LookalikeResolver  = net.DefaultResolver
+	registrations robertparker.RegistrationSource = &robertparker.RDAP{}
 )
 
 // textView is what -o text shows: a header, and the rows for a domain.
@@ -74,6 +78,8 @@ var (
 	permutationView = textView{"DOMAIN\tFUZZER\tPERMUTATION\tASCII", writePermutations}
 	findingView     = textView{"DOMAIN\tGRADE\tAREAS\tSEVERITY\tCHECK\tMESSAGE", writeFindings}
 	lookalikeView   = textView{"DOMAIN\tFUZZER\tLOOKALIKE\tASCII\tMAIL\tSHARED-NS\tBROKEN-DNS\tADDRESSES", writeLookalikes}
+
+	registrationView = textView{"DOMAIN\tSUSPICION\tLOOKALIKE\tASCII\tREGISTRAR\tREGISTERED\tREASONS", writeRegistrations}
 )
 
 // webDial makes the connections for -checks tls and web, if set. Tests replace it.
@@ -116,6 +122,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	file := fs.String("f", "", "read domains from `file`, one per line (- for stdin)")
 	permute := fs.Bool("permute", false, "generate lookalike permutations of each domain")
 	lookup := fs.Bool("lookup", false, "find which permutations of each domain exist, using DNS only")
+	registration := fs.Bool("registration", false, "compare each lookalike's registration with the original's, and rank them (implies -lookup)")
+	suspicious := fs.Bool("suspicious", false, "only show lookalikes ranked medium or high (implies -registration)")
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
@@ -153,6 +161,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 		}
 	}
+	*registration = *registration || *suspicious
+	*lookup = *lookup || *registration
 	checking := email || web.TLS || web.Web
 	if checking && (*permute || *lookup) && *format == "text" {
 		fmt.Fprintln(stderr, "robertparker: -o text can show -permute, -lookup, or -checks, not both")
@@ -196,10 +206,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if checking || *lookup {
 		set := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		dns, names := resolver, lookalikes
+		dns, names, source := resolver, lookalikes, registrations
 		if *dnsServer != "" {
 			custom := newResolver(*dnsServer)
 			dns, names = custom, custom
+			if _, real := source.(*robertparker.RDAP); real {
+				dial := (&net.Dialer{Resolver: custom}).DialContext
+				source = &robertparker.RDAP{Client: &http.Client{Transport: &http.Transport{DialContext: dial}}}
+			}
 			if web.DialContext == nil {
 				web.DialContext = (&net.Dialer{Resolver: custom}).DialContext
 			}
@@ -222,6 +236,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if *lookup {
 			opts.Analyzers = append(opts.Analyzers, robertparker.LookalikeAnalyzer(names, limiter))
 			view = lookalikeView
+			if *registration {
+				opts.Analyzers = append(opts.Analyzers, robertparker.RegistrationAnalyzer(source, nil))
+				view = registrationView
+			}
+			if *suspicious {
+				opts.Analyzers = append(opts.Analyzers, onlySuspicious)
+			}
 			if !set["workers"] {
 				opts.Workers = lookupWorkers
 			}
@@ -379,6 +400,25 @@ func writeLookalikes(w io.Writer, d *robertparker.Domain) {
 	for _, l := range d.Lookalikes {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.FQDN, l.Fuzzer, l.Domain, l.ASCII, yes(len(l.MailServers) > 0), yes(l.SharedNameServers), yes(l.BrokenDNS), orDash(strings.Join(l.Addresses, ",")))
 	}
+}
+
+// writeRegistrations writes one row per lookalike, with what makes it suspicious.
+func writeRegistrations(w io.Writer, d *robertparker.Domain) {
+	for _, l := range d.Lookalikes {
+		registered := ""
+		if !l.Registered.IsZero() {
+			registered = l.Registered.Format(time.DateOnly)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.FQDN, l.Suspicion, l.Domain, l.ASCII, orDash(l.Registrar), orDash(registered), orDash(strings.Join(l.Reasons, ", ")))
+	}
+}
+
+// onlySuspicious is an Analyzer that keeps the lookalikes ranked medium or high.
+func onlySuspicious(_ context.Context, d *robertparker.Domain) error {
+	d.Lookalikes = slices.DeleteFunc(d.Lookalikes, func(l robertparker.Lookalike) bool {
+		return l.Suspicion != robertparker.SuspicionHigh && l.Suspicion != robertparker.SuspicionMedium
+	})
+	return nil
 }
 
 // orDash returns s, or "-" if it is empty, so text columns are never blank.
