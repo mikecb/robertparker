@@ -100,6 +100,7 @@ func (c *emailChecker) checkDMARC(ctx context.Context, name string) error {
 		c.add("dmarc-record", SeverityUnknown, rfcDMARC, fmt.Sprintf("Couldn't look up the DMARC record of %s: %v", name, err))
 		return fmt.Errorf("DMARC lookup: %w", err)
 	}
+	c.dmarcChecked = true
 	if atStart > 1 {
 		c.add("dmarc-record", SeverityFailure, rfcDMARC, fmt.Sprintf("%d DMARC records at _dmarc.%s, so receivers discard them all.", atStart, name))
 		return nil
@@ -132,7 +133,9 @@ func (c *emailChecker) checkDMARCPolicy(record *dmarcRecord, inherited bool) {
 	np, hasNP := record.tags["np"]
 	if policyStrength[p] == 0 || (hasSP && policyStrength[sp] == 0) || (hasNP && policyStrength[np] == 0) {
 		// RFC 9989 section 4.10.1: only a valid rua saves a record like this, and then only as p=none.
+		c.dmarcPolicy = "none"
 		if len(validReportURIs(record)) == 0 {
+			c.dmarcPolicy = ""
 			c.add("dmarc-policy", SeverityFailure, rfcDMARC, "Has a missing or invalid policy and no valid rua, so receivers apply no DMARC processing.")
 			return
 		}
@@ -145,6 +148,7 @@ func (c *emailChecker) checkDMARCPolicy(record *dmarcRecord, inherited bool) {
 	if inherited && hasSP {
 		effective = sp
 	}
+	c.dmarcPolicy = effective
 	if effective == "none" {
 		c.add("dmarc-policy", SeverityWarning, rfcDMARC, "Policy is none, which only monitors, and doesn't stop spoofed mail.")
 	}

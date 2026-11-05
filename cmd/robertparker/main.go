@@ -48,8 +48,12 @@ const (
 	// bounded by streaming, so this doesn't grow with the input. 800 and 1600 used far more memory for no real gain.
 	gcPercent = 400
 
-	// networkWorkers is the default for -workers with -checks, which mostly wait on the network rather than use CPU.
-	networkWorkers = 64
+	// networkWorkers is the default for -workers with -checks. They mostly wait on the network, but -rate sets how fast
+	// they can go, so more workers only share it thinner, until each domain takes longer than -timeout allows.
+	networkWorkers = 16
+
+	// limiterConcurrency is how many lookups and requests run at once.
+	limiterConcurrency = 64
 
 	// lookupWorkers is the default for -workers with -lookup. Each domain already looks up many names at once.
 	lookupWorkers = 8
@@ -207,20 +211,22 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		set := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		dns, names, source := resolver, lookalikes, registrations
+		var client *http.Client
 		if *dnsServer != "" {
 			custom := newResolver(*dnsServer)
 			dns, names = custom, custom
+			dial := (&net.Dialer{Resolver: custom}).DialContext
+			client = &http.Client{Transport: &http.Transport{DialContext: dial}}
 			if _, real := source.(*robertparker.RDAP); real {
-				dial := (&net.Dialer{Resolver: custom}).DialContext
-				source = &robertparker.RDAP{Client: &http.Client{Transport: &http.Transport{DialContext: dial}}}
+				source = &robertparker.RDAP{Client: client}
 			}
 			if web.DialContext == nil {
-				web.DialContext = (&net.Dialer{Resolver: custom}).DialContext
+				web.DialContext = dial
 			}
 		}
-		limiter := robertparker.NewLimiter(networkWorkers, *rate)
+		limiter := robertparker.NewLimiter(limiterConcurrency, *rate)
 		if email {
-			opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, limiter))
+			opts.Analyzers = append(opts.Analyzers, robertparker.EmailAnalyzer(dns, client, limiter))
 		}
 		if web.TLS || web.Web {
 			opts.Analyzers = append(opts.Analyzers, robertparker.WebAnalyzer(web, limiter))

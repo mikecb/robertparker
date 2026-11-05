@@ -16,7 +16,7 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Levenshtein(s1, s2 string) int` | Edit distance between two strings, counting Unicode characters rather than bytes. |
 | `Process(ctx, domains <-chan string, opts Options) <-chan Result` | Analyzes a stream of domains concurrently. See [Processing many domains](#processing-many-domains). |
 | `NewLimiter(concurrent int, perSecond float64) *Limiter` | Caps calls to an external service across all workers. See [Network calls](#network-calls). |
-| `EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer` | Checks a domain's SPF and DMARC records, and adds to `d.Findings`. See [Email checks](#email-checks). |
+| `EmailAnalyzer(resolver Resolver, client *http.Client, limiter *Limiter) Analyzer` | Checks a domain's mail servers and email authentication, and adds to `d.Findings`. See [Email checks](#email-checks). |
 | `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
 | `LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer` | Finds which permutations of a domain exist, and stores them in `d.Lookalikes`. See [Lookalike lookup](#lookalike-lookup). |
 | `RegistrationAnalyzer(source RegistrationSource, now func() time.Time) Analyzer` | Compares each lookalike's registration with the domain's, and ranks them. See [Ranking lookalikes](#ranking-lookalikes). |
@@ -104,9 +104,11 @@ for r := range robertparker.Process(ctx, domains, opts) {
 
 ### Email checks
 
-`EmailAnalyzer` reads a domain's public DNS records, and adds a `Finding` for each problem, with a check ID, a severity, a message, and the standard it comes from. It checks the registrable domain, since that's where these records are normally published, so `mail.example.com` is checked as `example.com`.
+`EmailAnalyzer` reads a domain's public DNS records, plus an MTA-STS policy if it has one, and adds a `Finding` for each problem, with a check ID, a severity, a message, and the standard it comes from. It never connects to a mail server. It checks the registrable domain, since that's where these records are normally published, so `mail.example.com` is checked as `example.com`.
 
-`net.DefaultResolver` works as the `Resolver`. Pass a shared `Limiter` to cap lookups.
+`net.DefaultResolver` works as the `Resolver`. The `client` fetches MTA-STS policies, and can be nil. Pass a shared `Limiter` to cap lookups.
+
+Newer protections that are simply missing, like MTA-STS and TLS-RPT, are only information. What costs a domain is one that's present but broken, since that's what stops mail being delivered.
 
 | Check | Standard | What it looks for |
 | --- | --- | --- |
@@ -123,8 +125,24 @@ for r := range robertparker.Process(ctx, domains, opts) {
 | `dmarc-removed-tag` | RFC 9989 | No `pct`, `rf`, or `ri` tags |
 | `dmarc-reporting` | RFC 9989 | A valid `rua` |
 | `dmarc-report-authorization` | RFC 9990 | External report destinations authorize the reports |
+| `mx-record` | RFC 5321 | Can be read, and only reports a failed lookup |
+| `mx-resolve` | RFC 5321 | Each mail server resolves |
+| `mx-null` | RFC 7505 | A null MX isn't mixed with real mail servers |
+| `mx-reverse-dns` | RFC 5321 | Forward-confirmed reverse DNS, as information |
+| `parked-spf`, `parked-dmarc` | RFC 7208, RFC 9989 | A parked domain has SPF of `-all` and a DMARC policy of `reject` |
+| `parked-null-mx` | RFC 7505 | A parked domain has a null MX, as information |
+| `mta-sts` | RFC 8461 | A record leads to a policy that can be fetched, and is in `enforce` mode. None at all is information |
+| `mta-sts-mx` | RFC 8461 | The policy covers every mail server |
+| `tls-rpt` | RFC 8460 | One valid record. None at all is information |
+| `dkim-key` | RFC 6376, RFC 8301 | Keys at common selectors can be read and are at least 2048 bits. Finding none is information, since selectors can't be listed |
+| `dkim-hash` | RFC 8301 | Keys allow SHA-256 |
+| `dkim-testing` | RFC 6376 | Keys in test mode, as information |
 
-A lookup that fails, such as a timeout, is reported as a `SeverityUnknown` finding and an error, never as a missing record, so a network problem can't make a domain look misconfigured.
+A parked domain is one that takes no mail and whose SPF record authorizes no senders. A domain with no mail servers that does send mail isn't parked. Parked domains that use a parking service's MX records aren't recognised.
+
+A lookup that fails, such as a timeout, is reported as a `SeverityUnknown` finding and an error, never as a missing record, so a network problem can't make a domain look misconfigured. Lookups for checks that are only information don't count, so they can't stop a domain being graded.
+
+DNSSEC and DANE aren't checked yet. When they are, they'll be reported but won't earn a better grade, given their reliability problems.
 
 ### TLS and Web checks
 
@@ -323,7 +341,7 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-suspicious` | Only show lookalikes ranked `medium` or `high`. Implies `-registration`. |
 | `-checks list` | Comma-separated areas to check and grade: `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
 | `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, or per lookalike with `-lookup` or `-registration`). Text can't show `-checks` with `-permute` or `-lookup`. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
-| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 64 with `-checks`, which mostly wait on the network, or 8 with `-lookup`, where each domain already makes many lookups at once. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 | `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, or 10m with `-lookup`, since most of its time is spent waiting behind `-rate`. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |

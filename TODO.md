@@ -41,6 +41,7 @@ Delegation and zone health:
 - [ ] Dangling CNAMEs: targets that don't resolve, or point at unclaimed cloud services, which allows subdomain takeover.
 
 DNSSEC:
+Test for DNSSEC and DANE, but they don't earn a better grade, and having them enabled could even count against a domain, given their reliability problems.
 - [ ] Zone is signed, and the chain validates from the DS record at the parent.
 - [ ] Signing algorithm is recommended in the IANA registry (RFC 9904), not a deprecated one like RSA/SHA-1.
 - [ ] DS digest is SHA-256 or better, not SHA-1.
@@ -57,8 +58,8 @@ Server exposure:
 
 ## Email
 Mail exchangers:
-- [ ] MX records exist and resolve. Domains that send and receive no mail publish a null MX (RFC 7505) and `v=spf1 -all`.
-- [ ] Each MX host has forward-confirmed reverse DNS.
+- [x] MX records exist and resolve. Domains that send and receive no mail publish a null MX (RFC 7505) and `v=spf1 -all`.
+- [x] Note MX hosts without forward-confirmed reverse DNS, as information, since it matters for servers that send, and an MX host may only receive.
 
 SPF (RFC 7208):
 - [x] Exactly one SPF record, with valid syntax.
@@ -66,9 +67,9 @@ SPF (RFC 7208):
 - [x] Stays within the limit of 10 DNS lookups, and doesn't use the deprecated `ptr` mechanism.
 
 DKIM (RFC 6376):
-- [ ] Find keys at common selectors. This is best effort, since selectors can't be listed.
-- [ ] RSA keys are at least 2048 bits, and SHA-1 isn't allowed (RFC 8301).
-- [ ] Flag keys in test mode (`t=y`).
+- [x] Find keys at common selectors. This is best effort, since selectors can't be listed.
+- [x] RSA keys are at least 2048 bits, and SHA-1 isn't allowed (RFC 8301).
+- [x] Flag keys in test mode (`t=y`).
 
 DMARC (RFC 9989):
 - [x] Exactly one valid record, found with the RFC 9989 DNS tree walk rather than the public suffix list. Deciding if a report destination is external still uses the public suffix list.
@@ -76,11 +77,11 @@ DMARC (RFC 9989):
 - [x] `sp` and `np` don't weaken the policy for subdomains and non-existent subdomains.
 - [x] Flag test mode (`t=y`), and the removed `pct`, `rf`, and `ri` tags.
 - [x] `rua` reporting is set, and external report destinations authorize it.
-- [ ] Parked domains should have a DMARC policy that denies all sending.
+- [x] Parked domains, which take no mail and authorize no senders, have a DMARC policy of `reject` and SPF of `-all`.
 
 Transport:
-- [ ] MTA-STS: valid TXT record, policy served over HTTPS, and `mode=enforce` (RFC 8461).
-- [ ] TLS-RPT record is published (RFC 8460).
+- [x] MTA-STS: valid TXT record, policy served over HTTPS, and `mode=enforce` (RFC 8461).
+- [x] TLS-RPT record is published (RFC 8460).
 - [ ] DANE TLSA records for MX hosts on DNSSEC-signed zones (RFC 7672).
 - [ ] MX hosts offer STARTTLS, with TLS 1.2 or later and a valid certificate. Many networks block outbound port 25, so this needs to report when it couldn't connect.
 
