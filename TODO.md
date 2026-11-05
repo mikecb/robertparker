@@ -13,7 +13,9 @@
 - [x] Similarity lookup like dnstwist: `LookalikeAnalyzer` finds which permutations exist, using DNS only.
 - [x] Look up the domain registration of each lookalike and compare it to the canonical domain: `RegistrationAnalyzer` ranks lookalikes using RDAP.
 - [ ] Get registration data for TLDs that aren't on IANA's RDAP list, like `.io`, `.co`, `.de`, and `.us`, which are `unknown` for now. That likely means WHOIS.
-- [ ] Check the ranking against known phishing domains. It's only been tuned by looking at results, with nothing to say how many real threats it catches.
+- [x] Check the ranking against known phishing domains. See [docs/lookalike-evaluation.md](docs/lookalike-evaluation.md): `Permute` could generate only 0.1% of phishing domains that name a brand, and the ranking's signals point the right way, on thin evidence.
+- [ ] Match a stream of real domain names, like newly issued certificates or new registrations, against brands, rather than guessing names from a brand. This is what the evaluation points to as the way to find phishing.
+- [ ] Retest the ranking on phishing domains while they're still live, by collecting them over time from a recent feed. Only 61 of 368 sampled domains still existed.
 - [ ] Extend the homoglyph table beyond Latin, so non-Latin labels get homoglyph permutations.
 
 ## Abuse
