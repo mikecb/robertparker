@@ -11,20 +11,22 @@ import (
 
 // Domain is a reprisentation of a FQDN split into constituant parts, which other functions can work with.
 type Domain struct {
-	FQDN         string            //Fully Qualified Domain Name
-	Suffix       string            //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
-	Secondary    string            `json:",omitempty"` //The eTLD+1, e.g.: google.com
-	Tertiary     []string          `json:",omitempty"` //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
-	ICANN        bool              //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
-	Entropy      float64           //This might turn into a map if more than one entropy algorithm were to be implemented.
-	Permutations []Permutation     //A slice of permutations on the registrable domain, for testing for phishing, domain squatting, etc.
-	Findings     []Finding         `json:",omitempty"` //What the checks found.
-	Grades       map[string]string `json:",omitempty"` //The letter grade for each area, set by Grade.
-	Grade        string            `json:",omitempty"` //The overall letter grade, the worst of Grades, set by Grade.
-	Lookalikes   []Lookalike       `json:",omitempty"` //The permutations that exist, set by LookalikeAnalyzer.
+	FQDN         string              //Fully Qualified Domain Name
+	Suffix       string              //The domain's publix suffix as defined by publixsuffix.org. Note: public clouds like appspot.com count as a public suffix for these purposes.
+	Secondary    string              `json:",omitempty"` //The eTLD+1, e.g.: google.com
+	Tertiary     []string            `json:",omitempty"` //A slice of the levels above the TLD+1, e.g. ["foo", "bar"] for foo.bar.google.com
+	ICANN        bool                //If a domain is controlled by ICANN, helps us decide which level to use for analysis.
+	Entropy      float64             //This might turn into a map if more than one entropy algorithm were to be implemented.
+	Permutations []Permutation       //A slice of permutations on the registrable domain, for testing for phishing, domain squatting, etc.
+	Findings     []Finding           `json:",omitempty"` //What the checks found.
+	Grades       map[string]string   `json:",omitempty"` //The letter grade for each area, set by Grade.
+	Grade        string              `json:",omitempty"` //The overall letter grade, the worst of Grades, set by Grade.
+	Lookalikes   []Lookalike         `json:",omitempty"` //The permutations that exist, set by LookalikeAnalyzer.
+	Records      map[string][]string `json:",omitempty"` //The DNS records of each type, set by RecordsAnalyzer.
 
 	LookupFailures       int `json:",omitzero"` //How many permutations couldn't be looked up, so Lookalikes may be missing some.
 	RegistrationFailures int `json:",omitzero"` //How many Lookalikes couldn't be compared, so they have no Suspicion to go on.
+	RecordFailures       int `json:",omitzero"` //How many record types couldn't be looked up, so Records may be missing some.
 
 	areas []string //The areas that were checked. See Checked.
 }

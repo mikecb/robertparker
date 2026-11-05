@@ -20,6 +20,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
 | `LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer` | Finds which permutations of a domain exist, and stores them in `d.Lookalikes`. See [Lookalike lookup](#lookalike-lookup). |
 | `RegistrationAnalyzer(source RegistrationSource, now func() time.Time) Analyzer` | Compares each lookalike's registration with the domain's, and ranks them. See [Ranking lookalikes](#ranking-lookalikes). |
+| `RecordsAnalyzer(server string, limiter *Limiter) Analyzer` | Collects a domain's DNS records into `d.Records`. See [DNS records](#dns-records). |
+| `DNSAnalyzer(server string, limiter *Limiter) Analyzer` | Checks the records of a domain's zone, and adds to `d.Findings`. See [DNS checks](#dns-checks). |
 | `Grade(d *Domain) string` | Works out letter grades from `d.Findings`. Stores them in `d.Grades` and `d.Grade`, and returns the overall one. See [Grades](#grades). |
 
 ### Domain
@@ -37,6 +39,8 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Lookalikes` | The permutations that exist, set by `LookalikeAnalyzer`. Left out of JSON if there are none |
 | `LookupFailures` | How many permutations couldn't be looked up, so `Lookalikes` may be missing some |
 | `RegistrationFailures` | How many `Lookalikes` couldn't be compared, so they have no `Suspicion` to go on |
+| `Records` | The DNS records of each type, set by `RecordsAnalyzer`. Left out of JSON if there are none |
+| `RecordFailures` | How many record types couldn't be looked up, so `Records` may be missing some |
 | `Grades` | The letter grade for each area checked, set by `Grade`. Left out of JSON if there are none |
 | `Grade` | The overall letter grade, set by `Grade`. Left out of JSON if there isn't one |
 
@@ -142,7 +146,7 @@ A parked domain is one that takes no mail and whose SPF record authorizes no sen
 
 A lookup that fails, such as a timeout, is reported as a `SeverityUnknown` finding and an error, never as a missing record, so a network problem can't make a domain look misconfigured. Lookups for checks that are only information don't count, so they can't stop a domain being graded.
 
-DNSSEC and DANE aren't checked yet. When they are, they'll be reported but won't earn a better grade, given their reliability problems.
+DANE isn't checked yet. When it is, it'll be reported but won't earn a better grade, given its reliability problems, the same as [DNSSEC](#dns-checks).
 
 ### TLS and Web checks
 
@@ -202,6 +206,46 @@ Each query has its own 5 second timeout, which starts after the limiter, since a
 Only registered names are found, so expect a lot for a well-known brand: much of what's found will be defensive registrations and parking pages. `Lookalikes` shows what exists, not what's malicious, and doesn't affect grades.
 
 This finds squatters on typos of a domain. It doesn't find most phishing, which rarely looks like a typo: `Permute` could generate only 0.1% of the phishing domains naming a major brand in [this evaluation](docs/lookalike-evaluation.md).
+
+### DNS records
+
+`RecordsAnalyzer` collects A, AAAA, CNAME, NS, SOA, MX, TXT, CAA, DS, DNSKEY, HTTPS, and SVCB records into `d.Records`, by type, each value in presentation format, the same as it would be in a zone file. Each type gets its own query, because ANY is unreliable (RFC 8482). It looks up the host as given.
+
+`server` is the DNS server to ask, as `host` or `host:port`. If it's empty, the system's is used. Queries go over UDP, with a retry, and over TCP if the answer doesn't fit. Replies that don't match the query's ID and question are ignored.
+
+These are the records only. To grade them, use `DNSAnalyzer`.
+
+A type that can't be looked up is counted in `d.RecordFailures` and returned as an error, so a missing type can be told apart from one that doesn't exist.
+
+### DNS checks
+
+`DNSAnalyzer` reads a domain's records and adds a `Finding` for each problem. It checks the registrable domain, since that's where the zone starts, so `mail.example.com` is checked as `example.com`. A name with no name servers of its own, or that's a CNAME, isn't a zone, so it gets an information finding and no grade.
+
+| Check | Standard | What it looks for |
+| --- | --- | --- |
+| `dns-ns-count` | RFC 2182 | More than one name server |
+| `dns-ns-network` | RFC 2182 | The name servers aren't all on one /24 network |
+| `dns-ns-resolve` | RFC 2182 | Each name server resolves |
+| `dns-ns-cname` | RFC 2181 | Name servers aren't CNAMEs |
+| `dns-ns-ipv6` | | No name server has an IPv6 address, as information |
+| `dns-soa` | RFC 1912 | There's an SOA record |
+| `dns-soa-timers` | RFC 1912 | Retry isn't longer than refresh, and expire is at least the two together. Being outside the suggested ranges is information, since many well-run zones are |
+| `dns-address` | RFC 6890 | The A and AAAA records aren't private, loopback, or link-local addresses |
+| `dns-mx-cname` | RFC 2181 | Mail servers aren't CNAMEs |
+| `dns-caa` | RFC 8659 | CAA records exist, with an `issue` property, so they limit who can issue certificates |
+| `dns-caa-critical` | RFC 8659 | No property CAs won't know is marked critical, which stops them issuing |
+| `dnssec-status` | RFC 4034 | Whether the zone is signed, as information |
+| `dnssec-chain` | RFC 4034 | Keys exist, and a DS record at the parent matches one of them |
+| `dnssec-ds-digest` | RFC 9904 | A DS record uses SHA-256 or better |
+| `dnssec-algorithm` | RFC 9904 | The keys don't use a deprecated algorithm, like RSA/SHA-1 |
+
+DNSSEC never earns credit, given its reliability problems. A zone gets the same grade signed or unsigned, and only loses marks for signing that's broken or weak, since a mistake there takes the whole domain offline. Signatures themselves aren't verified, only the link from the DS record to the keys.
+
+Queries ask a validating resolver for the records even when DNSSEC fails, because otherwise a broken chain looks the same as a server that's down.
+
+The checks read records through a resolver, so they see what everyone else sees, but they don't ask a domain's name servers anything directly. That means they can't compare the name servers with each other or with the parent zone, and a name server that resolves may still not answer. TXT is left to the email checks, and HTTPS and SVCB are optional, so they aren't graded.
+
+A lookup that fails is reported as a `SeverityUnknown` finding and an error, and the area gets no grade.
 
 ### Ranking lookalikes
 
@@ -341,9 +385,10 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-lookup` | Find which permutations of each domain exist, using DNS only. It makes about 2 lookups per permutation, so roughly 400 per domain, which takes about 4 seconds at the default `-rate`. |
 | `-registration` | Also compare each lookalike's registration with the original's, and rank them. Implies `-lookup`. It makes a request per lookalike at up to 10 a second per registry, so a well-known domain takes about 30 seconds in all. |
 | `-suspicious` | Only show lookalikes ranked `medium` or `high`. Implies `-registration`. |
-| `-checks list` | Comma-separated areas to check and grade: `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, or per lookalike with `-lookup` or `-registration`). Text can't show `-checks` with `-permute` or `-lookup`. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
-| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
+| `-records` | Collect each domain's DNS records. |
+| `-checks list` | Comma-separated areas to check and grade: `dns`, `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, per record with `-records`, or per lookalike with `-lookup` or `-registration`). Text can only show one of those at a time, but JSON can hold them all. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks` or `-records`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 | `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, or 10m with `-lookup`, since most of its time is spent waiting behind `-rate`. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |

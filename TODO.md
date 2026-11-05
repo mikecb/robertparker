@@ -29,29 +29,32 @@ The DNS, Email, TLS, and Web checks below all need these first. Checks marked (i
 
 ## DNS
 Records:
-- [ ] Collect A, AAAA, CNAME, NS, SOA, MX, TXT, CAA, DS, DNSKEY, and HTTPS/SVCB records, querying by type because ANY is unreliable (RFC 8482).
+- [x] Collect A, AAAA, CNAME, NS, SOA, MX, TXT, CAA, DS, DNSKEY, and HTTPS/SVCB records, querying by type because ANY is unreliable (RFC 8482): `RecordsAnalyzer`.
 
-Delegation and zone health:
-- [ ] At least two nameservers, on separate networks (RFC 2182).
+Delegation and zone health, in `DNSAnalyzer`. The open items here need to query a domain's nameservers directly, which it doesn't do yet:
+- [x] At least two nameservers, on separate networks (RFC 2182). Separate means not on one /24.
 - [ ] NS records at the parent and in the zone agree, and every nameserver answers for the zone, so there's no lame delegation.
 - [ ] SOA serials match across nameservers.
-- [ ] SOA timers are in sensible ranges (RFC 1912).
-- [ ] NS and MX targets resolve, and aren't CNAMEs (RFC 2181).
+- [x] SOA timers are in sensible ranges (RFC 1912). Contradictions cost a warning, but being outside the ranges is information, since half of the large sites sampled are.
+- [x] NS and MX targets resolve, and aren't CNAMEs (RFC 2181).
+- [x] A and AAAA records aren't private or loopback addresses.
 - [ ] Nameservers answer over TCP as well as UDP (RFC 7766).
-- [ ] Nameservers are reachable over IPv6.
+- [x] Nameservers have IPv6 addresses, as information.
+- [ ] Nameservers answer over IPv6.
 - [ ] Flag wildcard records.
 - [ ] Dangling CNAMEs: targets that don't resolve, or point at unclaimed cloud services, which allows subdomain takeover.
 
 DNSSEC:
 Test for DNSSEC and DANE, but they don't earn a better grade, and having them enabled could even count against a domain, given their reliability problems.
-- [ ] Zone is signed, and the chain validates from the DS record at the parent.
-- [ ] Signing algorithm is recommended in the IANA registry (RFC 9904), not a deprecated one like RSA/SHA-1.
-- [ ] DS digest is SHA-256 or better, not SHA-1.
+- [x] Zone is signed, and a DS record at the parent matches a key in the zone.
+- [ ] Signatures validate, along the whole chain.
+- [x] Signing algorithm isn't a deprecated one like RSA/SHA-1 (RFC 9904).
+- [x] DS digest is SHA-256 or better, not SHA-1.
 - [ ] RRSIGs aren't expired or about to expire.
 - [ ] NSEC3 uses zero extra iterations and no salt (RFC 9276).
 
 Certificate issuance:
-- [ ] CAA records restrict which CAs can issue (RFC 8659).
+- [x] CAA records restrict which CAs can issue (RFC 8659).
 
 Server exposure:
 - [ ] Zone transfers (AXFR) are refused (intrusive).
