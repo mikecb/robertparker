@@ -188,7 +188,7 @@ func useLog(t *testing.T, names ...string) {
 
 func TestWatch(t *testing.T) {
 	useLog(t, "paypal-login.com", "www.paypal-login.com", "example.org", "paypal.xyz")
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	code, out, errOut := runCLIContext(t, ctx, "", "-watch", "paypal.com")
 	if code != 0 {

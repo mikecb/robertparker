@@ -55,6 +55,19 @@ func (l *fakeLog) add(names ...string) {
 	l.names = append(l.names, names...)
 }
 
+// awaitTail waits for a reader to find where the log ends, since it only sends what comes after that. It asks for the
+// checkpoint once to see if the log is worth reading, and again when it starts following it.
+func (l *fakeLog) awaitTail(ctx context.Context) {
+	for ctx.Err() == nil {
+		reads := 0
+		l.locked(func() { reads = l.hits["/checkpoint"] })
+		if reads >= 2 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // locked runs fn with the log to itself, which anything touching its fields needs, since the server runs on its own.
 func (l *fakeLog) locked(fn func()) {
 	l.mu.Lock()
@@ -130,19 +143,12 @@ func (l *fakeLog) log() robertparker.CTLog {
 }
 
 // following runs reader until stop returns true of what's been seen, and returns that.
-func following(t *testing.T, r *robertparker.CTReader, afterStart func(), stop func([]string) bool) []string {
+func (l *fakeLog) following(t *testing.T, r *robertparker.CTReader, afterStart func(), stop func([]string) bool) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var mu sync.Mutex
 	var seen []string
-	started := make(chan bool, 1)
-	r.Started = func(robertparker.CTLog) {
-		select {
-		case started <- true:
-		default:
-		}
-	}
 	done := make(chan error, 1)
 	go func() {
 		done <- r.Names(ctx, func(s robertparker.Sighting) {
@@ -156,12 +162,7 @@ func following(t *testing.T, r *robertparker.CTReader, afterStart func(), stop f
 			}
 		})
 	}()
-	select {
-	case <-started:
-	case err := <-done:
-		t.Fatalf("Names returned early: %v", err)
-	}
-	time.Sleep(20 * time.Millisecond) // Give tail time to read where the log ends.
+	l.awaitTail(ctx)
 	afterStart()
 	if err := <-done; err != context.Canceled {
 		t.Errorf("got %v, and saw %d names", err, len(seen))
@@ -236,7 +237,7 @@ func TestCTFollowsNewEntries(t *testing.T) {
 	for i := range added {
 		added[i] = fmt.Sprintf("new%d.example", i)
 	}
-	got := following(t, l.reader(), func() { l.add(added...) }, func(seen []string) bool { return len(seen) >= 212 })
+	got := l.following(t, l.reader(), func() { l.add(added...) }, func(seen []string) bool { return len(seen) >= 212 })
 
 	// The log started with 300 entries, so the first tile it can read holds entries 256 to 511, and it starts at 300.
 	if len(got) != 212 || got[0] != "new0.example" || got[211] != "new211.example" {
@@ -274,7 +275,7 @@ func TestCTReadsPartialTilesAfterWaiting(t *testing.T) {
 	l := newFakeLog(t, 256)
 	r := l.reader()
 	r.Wait = 10 * time.Millisecond
-	got := following(t, r, func() { l.add("a.example", "b.example") }, func(seen []string) bool { return len(seen) >= 2 })
+	got := l.following(t, r, func() { l.add("a.example", "b.example") }, func(seen []string) bool { return len(seen) >= 2 })
 	if !slices.Equal(got, []string{"a.example", "b.example"}) {
 		t.Fatalf("got %q", got)
 	}
@@ -287,7 +288,7 @@ func TestCTReadsPartialTilesAfterWaiting(t *testing.T) {
 	for i := range more {
 		more[i] = fmt.Sprintf("more%d.example", i)
 	}
-	got = following(t, r, func() {
+	got = l.following(t, r, func() {
 		l.add("a.example", "b.example")
 		time.Sleep(100 * time.Millisecond)
 		l.add(more...)
@@ -303,7 +304,7 @@ func TestCTPartialTileThatsGone(t *testing.T) {
 	r := l.reader()
 	r.Wait = 10 * time.Millisecond
 	more := make([]string, 254)
-	got := following(t, r, func() {
+	got := l.following(t, r, func() {
 		l.add("a.example", "b.example")
 		time.Sleep(50 * time.Millisecond)
 		for i := range more {
@@ -331,7 +332,7 @@ func TestCTKeepsTryingWithoutLosingEntries(t *testing.T) {
 	for i := range more {
 		more[i] = fmt.Sprintf("more%d.example", i)
 	}
-	got := following(t, r, func() { l.add(more...) }, func(seen []string) bool { return len(seen) >= 256 })
+	got := l.following(t, r, func() { l.add(more...) }, func(seen []string) bool { return len(seen) >= 256 })
 	if len(got) != 256 || got[0] != "more0.example" {
 		t.Errorf("got %d names", len(got))
 	}
@@ -353,7 +354,7 @@ func TestCTKeepsPlaceAfterABadEntry(t *testing.T) {
 	for i := range more {
 		more[i] = "x.example"
 	}
-	got := following(t, l.reader(), func() { l.add(more...) }, func(seen []string) bool { return len(seen) >= 255 })
+	got := l.following(t, l.reader(), func() { l.add(more...) }, func(seen []string) bool { return len(seen) >= 255 })
 	if len(got) != 255 || got[0] != "0.example" {
 		t.Errorf("got %d names, starting %q", len(got), got[:min(1, len(got))])
 	}
@@ -374,15 +375,14 @@ func TestCTSightings(t *testing.T) {
 	r := l.reader()
 	var got []robertparker.Sighting
 	var mu sync.Mutex
-	r.Started = func(robertparker.CTLog) {
-		time.AfterFunc(20*time.Millisecond, func() {
-			names := make([]string, 256)
-			for i := range names {
-				names[i] = "a.example"
-			}
-			l.add(names...)
-		})
-	}
+	go func() {
+		l.awaitTail(ctx)
+		names := make([]string, 256)
+		for i := range names {
+			names[i] = "a.example"
+		}
+		l.add(names...)
+	}()
 	r.Names(ctx, func(s robertparker.Sighting) {
 		mu.Lock()
 		defer mu.Unlock()
