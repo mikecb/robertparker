@@ -55,7 +55,16 @@ func (r *recordLookup) direct(ctx context.Context, network, ip, name string, cod
 	if r.rewrite != nil {
 		address = r.rewrite(address)
 	}
-	return r.ask(ctx, network, address, name, code, false, attempts)
+	return r.ask(ctx, network, address, name, code, false, false, attempts)
+}
+
+// directSigned is direct, with the RRSIG records that go with the answers.
+func (r *recordLookup) directSigned(ctx context.Context, ip, name string, code dnsmessage.Type) (dnsReply, error) {
+	address := net.JoinHostPort(ip, "53")
+	if r.rewrite != nil {
+		address = r.rewrite(address)
+	}
+	return r.ask(ctx, "udp", address, name, code, false, true, recordAttempts)
 }
 
 // nameServer is one of a zone's name servers.

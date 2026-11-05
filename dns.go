@@ -77,12 +77,13 @@ func DNSAnalyzer(server string, limiter *Limiter) Analyzer {
 // newDNSAnalyzer returns a DNSAnalyzer that uses lookup.
 func newDNSAnalyzer(lookup *recordLookup) Analyzer {
 	parents := &parentZones{lookup: lookup}
+	chain := &trustChain{lookup: lookup, parents: parents}
 	return func(ctx context.Context, d *Domain) error {
 		zone := d.registrable()
 		if zone == "" {
 			return nil
 		}
-		c := dnsChecker{lookup: lookup, parents: parents, domain: d, zone: zone}
+		c := dnsChecker{lookup: lookup, parents: parents, chain: chain, domain: d, zone: zone}
 		return c.check(ctx)
 	}
 }
@@ -91,6 +92,7 @@ func newDNSAnalyzer(lookup *recordLookup) Analyzer {
 type dnsChecker struct {
 	lookup  *recordLookup
 	parents *parentZones
+	chain   *trustChain
 	domain  *Domain
 	zone    string
 }
@@ -326,6 +328,7 @@ func (c *dnsChecker) checkCAA(ctx context.Context) error {
 
 // dsRecord is a parsed DS record.
 type dsRecord struct {
+	keyTag                uint16
 	algorithm, digestType int
 	digest                []byte
 }
@@ -336,13 +339,14 @@ func parseDS(s string) (dsRecord, bool) {
 	if len(fields) != 4 {
 		return dsRecord{}, false
 	}
-	algorithm, err := strconv.Atoi(fields[1])
-	digestType, err2 := strconv.Atoi(fields[2])
-	digest, err3 := hex.DecodeString(fields[3])
-	if err != nil || err2 != nil || err3 != nil {
+	keyTag, err := strconv.ParseUint(fields[0], 10, 16)
+	algorithm, err2 := strconv.Atoi(fields[1])
+	digestType, err3 := strconv.Atoi(fields[2])
+	digest, err4 := hex.DecodeString(fields[3])
+	if err != nil || err2 != nil || err3 != nil || err4 != nil {
 		return dsRecord{}, false
 	}
-	return dsRecord{algorithm, digestType, digest}, true
+	return dsRecord{uint16(keyTag), algorithm, digestType, digest}, true
 }
 
 // dnskeyRecord is a parsed DNSKEY record.
@@ -369,13 +373,33 @@ func parseDNSKEY(s string) (dnskeyRecord, bool) {
 	return dnskeyRecord{int(flags), int(algorithm), append(data, key...)}, true
 }
 
-// canonicalName returns a name in lowercase wire format, as it's hashed for a DS record (RFC 4034 section 6.2).
+// canonicalName returns a name in presentation format as lowercase wire format, as it's signed, and hashed for a DS
+// record (RFC 4034 section 6.2). Only ASCII letters are lowered, since the other bytes of a label aren't letters at all.
 func canonicalName(name string) []byte {
-	var wire []byte
-	for _, label := range strings.Split(strings.ToLower(strings.TrimSuffix(name, ".")), ".") {
-		wire = append(wire, byte(len(label)))
-		wire = append(wire, label...)
+	name = strings.TrimSuffix(name, ".")
+	if name == "" {
+		return []byte{0}
 	}
+	wire := []byte{0}
+	start := 0 //Where the current label's length goes.
+	for i := 0; i < len(name); i++ {
+		b := name[i]
+		switch {
+		case b == '\\' && i+1 < len(name):
+			i++
+			b = name[i]
+		case b == '.':
+			wire[start] = byte(len(wire) - start - 1)
+			start = len(wire)
+			wire = append(wire, 0)
+			continue
+		}
+		if 'A' <= b && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		wire = append(wire, b)
+	}
+	wire[start] = byte(len(wire) - start - 1)
 	return append(wire, 0)
 }
 
@@ -396,8 +420,8 @@ func digestDS(digestType int, zone string, key []byte) []byte {
 	return nil
 }
 
-// checkDNSSEC tests how the zone is signed. It checks the first link of the chain, from the DS records at the parent to
-// the keys in the zone, which is what breaks when keys are changed carelessly. It doesn't verify signatures.
+// checkDNSSEC tests how the zone is signed: the link from the DS records at the parent to the keys in the zone, which is
+// what breaks when keys are changed carelessly, the chain above that, and the signatures in the zone.
 func (c *dnsChecker) checkDNSSEC(ctx context.Context, servers []nameServer) error {
 	dsValues, err := c.get(ctx, "dnssec-chain", rfcDNSSEC, c.zone, typeDS)
 	keyValues, err2 := c.get(ctx, "dnssec-chain", rfcDNSSEC, c.zone, typeDNSKEY)
@@ -428,21 +452,19 @@ func (c *dnsChecker) checkDNSSEC(ctx context.Context, servers []nameServer) erro
 			algorithms[key.algorithm] = true
 		}
 	}
-	strongDigest, verifiable, matched := false, false, false
+	strongDigest, verifiable := false, false
+	var delegation []dsRecord
 	for _, value := range dsValues {
 		ds, ok := parseDS(value)
 		if !ok {
 			continue
 		}
+		delegation = append(delegation, ds)
 		algorithms[ds.algorithm] = true
 		strongDigest = strongDigest || ds.digestType == digestSHA256 || ds.digestType == digestSHA384
-		for _, key := range keys {
-			if want := digestDS(ds.digestType, c.zone, key.data); want != nil && key.flags&dnskeyZoneFlag != 0 {
-				verifiable = true
-				matched = matched || slices.Equal(want, ds.digest)
-			}
-		}
+		verifiable = verifiable || digestDS(ds.digestType, c.zone, nil) != nil
 	}
+	matched := len(anchoredKeys(keys, delegation, c.zone)) > 0
 	if verifiable && !matched {
 		c.add("dnssec-chain", SeverityFailure, rfcDNSSEC, "No DS record at the parent matches a key in the zone, so validating resolvers will refuse the domain.")
 	}
@@ -454,5 +476,9 @@ func (c *dnsChecker) checkDNSSEC(ctx context.Context, servers []nameServer) erro
 			c.add("dnssec-algorithm", SeverityWarning, rfcDNSSECAlgs, fmt.Sprintf("Signs with %s, which is deprecated.", name))
 		}
 	}
-	return nil
+	err = c.checkChain(ctx)
+	if matched {
+		return errors.Join(err, c.checkSignatures(ctx, servers, delegation))
+	}
+	return err
 }

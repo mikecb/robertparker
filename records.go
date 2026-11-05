@@ -25,6 +25,7 @@ import (
 const (
 	// These types aren't named by dnsmessage, which hands them over as raw bytes.
 	typeDS     dnsmessage.Type = 43
+	typeRRSIG  dnsmessage.Type = 46
 	typeDNSKEY dnsmessage.Type = 48
 	typeCAA    dnsmessage.Type = 257
 
@@ -111,6 +112,7 @@ type recordLookup struct {
 	server  string
 	limiter *Limiter
 	rewrite func(address string) string //Changes where direct queries go, for tests.
+	anchors []string                    //Replaces rootAnchors, for tests.
 
 	mu      sync.Mutex
 	address string //Where to send queries, once it's known.
@@ -191,11 +193,20 @@ func isAlias(answers []dnsmessage.Resource, name string) bool {
 
 // answers returns the answers to a query for one type at name, or nothing if name doesn't exist.
 func (r *recordLookup) answers(ctx context.Context, name string, code dnsmessage.Type) ([]dnsmessage.Resource, error) {
+	return r.resolve(ctx, name, code, false)
+}
+
+// signedAnswers is answers, with the RRSIG records that go with them.
+func (r *recordLookup) signedAnswers(ctx context.Context, name string, code dnsmessage.Type) ([]dnsmessage.Resource, error) {
+	return r.resolve(ctx, name, code, true)
+}
+
+func (r *recordLookup) resolve(ctx context.Context, name string, code dnsmessage.Type, signed bool) ([]dnsmessage.Resource, error) {
 	address, err := r.serverAddress(ctx)
 	if err != nil {
 		return nil, err
 	}
-	reply, err := r.ask(ctx, "udp", address, name, code, true, recordAttempts)
+	reply, err := r.ask(ctx, "udp", address, name, code, true, signed, recordAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -217,13 +228,13 @@ type dnsReply struct {
 
 // ask sends a query to address, and returns the reply, whatever its response code. Over UDP, it makes up to attempts
 // tries if there's a timeout, and if the answer doesn't fit, it goes over TCP. A recursive query asks the server to find
-// the answer, and any other asks only what it knows itself.
-func (r *recordLookup) ask(ctx context.Context, network, address, name string, code dnsmessage.Type, recursive bool, attempts int) (dnsReply, error) {
+// the answer, and any other asks only what it knows itself. A signed query asks for RRSIG records as well.
+func (r *recordLookup) ask(ctx context.Context, network, address, name string, code dnsmessage.Type, recursive, signed bool, attempts int) (dnsReply, error) {
 	question, err := dnsmessage.NewName(strings.TrimSuffix(name, ".") + ".")
 	if err != nil {
 		return dnsReply{}, err
 	}
-	query, id, err := buildQuery(question, code, recursive)
+	query, id, err := buildQuery(question, code, recursive, signed)
 	if err != nil {
 		return dnsReply{}, err
 	}
@@ -252,7 +263,7 @@ func (r *recordLookup) ask(ctx context.Context, network, address, name string, c
 		return dnsReply{}, err
 	}
 	if reply.header.Truncated && network == "udp" {
-		return r.ask(ctx, "tcp", address, name, code, recursive, 1)
+		return r.ask(ctx, "tcp", address, name, code, recursive, signed, 1)
 	}
 	return reply, nil
 }
@@ -270,7 +281,7 @@ func compareRecords(a, b string) int {
 }
 
 // buildQuery makes a query, and returns it with its ID.
-func buildQuery(name dnsmessage.Name, code dnsmessage.Type, recursive bool) ([]byte, uint16, error) {
+func buildQuery(name dnsmessage.Name, code dnsmessage.Type, recursive, signed bool) ([]byte, uint16, error) {
 	var random [2]byte
 	rand.Read(random[:])
 	id := binary.BigEndian.Uint16(random[:])
@@ -288,7 +299,7 @@ func buildQuery(name dnsmessage.Name, code dnsmessage.Type, recursive bool) ([]b
 		return nil, 0, err
 	}
 	var edns dnsmessage.ResourceHeader
-	if err := edns.SetEDNS0(recordUDPSize, dnsmessage.RCodeSuccess, false); err != nil {
+	if err := edns.SetEDNS0(recordUDPSize, dnsmessage.RCodeSuccess, signed); err != nil {
 		return nil, 0, err
 	}
 	if err := builder.OPTResource(edns, dnsmessage.OPTResource{}); err != nil {

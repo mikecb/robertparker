@@ -471,18 +471,18 @@ func TestParentIsTheNearestZoneAbove(t *testing.T) {
 // With checking disabled, a resolver can pass on an empty answer from one server, which is no reason to say that the
 // domain is offline.
 func TestDNSSECKeysAreConfirmedWithTheNameServers(t *testing.T) {
-	key, data := signedKey(13)
+	key := newTestKey(t, 13, entryFlags)
 	zone := healthyZone()
-	zone[zoneDS] = []dnsmessage.ResourceBody{dsFor(data, 13, false)}
+	zone[zoneDS] = []dnsmessage.ResourceBody{dsFor(key.data, 13, false)}
 
 	t.Run("a server has them", func(t *testing.T) {
 		n := healthyInternet()
-		n[ns2v4].answers[zoneDNSKEY] = []dnsmessage.ResourceBody{key}
+		n[ns2v4].answers[zoneDNSKEY] = []dnsmessage.ResourceBody{key.record()}
 		d, err := checkZone(t, zone, n)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, found := severities(d)["dnssec-chain"]; found {
+		if got := severities(d)["dnssec-chain"]; got == robertparker.SeverityFailure {
 			t.Errorf("got %+v", d.Findings)
 		}
 	})
