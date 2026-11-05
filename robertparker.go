@@ -23,7 +23,8 @@ type Domain struct {
 	Grade        string            `json:",omitempty"` //The overall letter grade, the worst of Grades, set by Grade.
 	Lookalikes   []Lookalike       `json:",omitempty"` //The permutations that exist, set by LookalikeAnalyzer.
 
-	LookupFailures int `json:",omitzero"` //How many permutations couldn't be looked up, so Lookalikes may be missing some.
+	LookupFailures       int `json:",omitzero"` //How many permutations couldn't be looked up, so Lookalikes may be missing some.
+	RegistrationFailures int `json:",omitzero"` //How many Lookalikes couldn't be compared, so they have no Suspicion to go on.
 
 	areas []string //The areas that were checked. See Checked.
 }

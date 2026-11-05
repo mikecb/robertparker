@@ -39,8 +39,15 @@ type Lookalike struct {
 	Addresses         []string `json:",omitempty"` //Its IP addresses.
 	NameServers       []string `json:",omitempty"` //Its name servers.
 	MailServers       []string `json:",omitempty"` //Its mail servers. A lookalike that can receive mail is a strong sign of phishing.
-	SharedNameServers bool     `json:",omitzero"`  //It has name servers from the same organization as the original, so it may well be a defensive registration.
+	SharedNameServers bool     `json:",omitzero"`  //It uses the same exact name servers as the original, so it probably has the same owner.
 	BrokenDNS         bool     `json:",omitzero"`  //It's registered, but its name servers don't answer properly, so there's nothing else to report about it.
+
+	// These are set by RegistrationAnalyzer.
+	Registrar     string    `json:",omitempty"` //Its registrar.
+	Registered    time.Time `json:",omitzero"`  //When it was registered.
+	SameRegistrar bool      `json:",omitzero"`  //It has the same registrar as the original.
+	Suspicion     Suspicion `json:",omitempty"` //How likely it is to be malicious.
+	Reasons       []string  `json:",omitempty"` //Why it got that rating.
 }
 
 // LookalikeResolver looks up the DNS records that show a domain exists. net.DefaultResolver is one, and tests use a fake.
@@ -72,12 +79,8 @@ func LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer {
 			d.Permutations = nil
 		}
 
-		ownOrgs := map[string]bool{}
-		if servers, err := shared.nameServers(ctx, name); err == nil {
-			for _, s := range servers {
-				ownOrgs[organizationalDomain(s)] = true
-			}
-		}
+		// If this fails, lookalikes just won't be marked as sharing name servers.
+		own, _ := shared.nameServers(ctx, name)
 
 		found := make([]*Lookalike, len(permutations))
 		var failures atomic.Int64
@@ -97,7 +100,7 @@ func LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer {
 			go func() {
 				defer wg.Done()
 				defer func() { <-slots }()
-				l, err := shared.look(ctx, p, ownOrgs)
+				l, err := shared.look(ctx, p, own)
 				if err != nil {
 					failures.Add(1)
 					once.Do(func() { firstErr = err })
@@ -237,7 +240,7 @@ func randomName(suffix string) string {
 }
 
 // look finds out if a permutation exists, and returns nil if it doesn't.
-func (l *lookalikeLookup) look(ctx context.Context, p Permutation, ownOrgs map[string]bool) (*Lookalike, error) {
+func (l *lookalikeLookup) look(ctx context.Context, p Permutation, own []string) (*Lookalike, error) {
 	addresses, hostErr := l.addresses(ctx, p.ASCII)
 	if hostErr != nil && !isBrokenDNS(hostErr) {
 		return nil, hostErr
@@ -274,9 +277,9 @@ func (l *lookalikeLookup) look(ctx context.Context, p Permutation, ownOrgs map[s
 		return nil, err
 	}
 	found := &Lookalike{Fuzzer: p.Fuzzer, Domain: p.Domain, ASCII: p.ASCII, Addresses: addresses, NameServers: servers, MailServers: mail}
-	for _, s := range servers {
-		found.SharedNameServers = found.SharedNameServers || ownOrgs[organizationalDomain(s)]
-	}
+	// All of them have to match exactly. Being with the same provider means nothing, since Cloudflare and others host
+	// millions of unrelated domains, but they hand out particular servers to each account.
+	found.SharedNameServers = len(servers) > 0 && !slices.ContainsFunc(servers, func(s string) bool { return !slices.Contains(own, s) })
 	return found, nil
 }
 

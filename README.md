@@ -19,6 +19,7 @@ I wrote it because I did not find a good library that performed these simple fun
 | `EmailAnalyzer(resolver Resolver, limiter *Limiter) Analyzer` | Checks a domain's SPF and DMARC records, and adds to `d.Findings`. See [Email checks](#email-checks). |
 | `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
 | `LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer` | Finds which permutations of a domain exist, and stores them in `d.Lookalikes`. See [Lookalike lookup](#lookalike-lookup). |
+| `RegistrationAnalyzer(source RegistrationSource, now func() time.Time) Analyzer` | Compares each lookalike's registration with the domain's, and ranks them. See [Ranking lookalikes](#ranking-lookalikes). |
 | `Grade(d *Domain) string` | Works out letter grades from `d.Findings`. Stores them in `d.Grades` and `d.Grade`, and returns the overall one. See [Grades](#grades). |
 
 ### Domain
@@ -35,6 +36,7 @@ I wrote it because I did not find a good library that performed these simple fun
 | `Findings` | What the checks found. Left out of JSON if there are none |
 | `Lookalikes` | The permutations that exist, set by `LookalikeAnalyzer`. Left out of JSON if there are none |
 | `LookupFailures` | How many permutations couldn't be looked up, so `Lookalikes` may be missing some |
+| `RegistrationFailures` | How many `Lookalikes` couldn't be compared, so they have no `Suspicion` to go on |
 | `Grades` | The letter grade for each area checked, set by `Grade`. Left out of JSON if there are none |
 | `Grade` | The overall letter grade, set by `Grade`. Left out of JSON if there isn't one |
 
@@ -167,8 +169,8 @@ A normal connection only shows the best a server offers, so a site that also all
 | --- | --- |
 | `Fuzzer`, `Domain`, `ASCII` | The permutation, as in `Permutation` |
 | `Addresses`, `NameServers` | What it resolves to |
-| `MailServers` | Its mail servers. One that can receive mail is a strong sign of phishing, even with no website. A null MX doesn't count |
-| `SharedNameServers` | It has name servers from the same organization as the original, so it may be a defensive registration |
+| `MailServers` | Its mail servers. A null MX doesn't count |
+| `SharedNameServers` | It uses the same exact name servers as the original, so it probably has the same owner. Being with the same provider doesn't count, since Cloudflare and others host millions of unrelated domains |
 | `BrokenDNS` | It's registered, but its name servers don't answer properly, so there's nothing else to report |
 
 A few things decide what counts as existing:
@@ -180,6 +182,26 @@ A few things decide what counts as existing:
 Each query has its own 5 second timeout, which starts after the limiter, since a domain has hundreds of queries and time spent waiting behind a rate limit doesn't mean anything is wrong.
 
 Only registered names are found, so expect a lot for a well-known brand: much of what's found will be defensive registrations and parking pages. `Lookalikes` shows what exists, not what's malicious, and doesn't affect grades.
+
+### Ranking lookalikes
+
+`RegistrationAnalyzer` goes after `LookalikeAnalyzer`. It looks up the registration of the domain and of each lookalike, compares them, and sorts `d.Lookalikes` with the most suspicious first. Each lookalike gets its `Registrar`, `Registered` date, `SameRegistrar`, and a `Suspicion` with the `Reasons` for it.
+
+Each sign counts for points, so that no one thing decides:
+
+| Sign | Points |
+| --- | --- |
+| Registered in the last year | 2 |
+| Different registrar from the original | 1 |
+| Can receive mail | 1 |
+
+3 or more is `high`, 2 is `medium`, and less is `low`. A recent registration counts most, because phishing domains tend to be used soon after they're registered. Mail servers count less than they sound like they should, because parking services give their domains them too. The same registrar doesn't clear a lookalike, because brands often use the same big registrars as everyone else, but sharing the same exact name servers does, making it `low` whatever else is true.
+
+`unknown` means there's nothing to compare, which says nothing either way. That's a registry with no RDAP server, a name under a private suffix like `appspot.com`, or a lookup that failed. Failures are counted in `d.RegistrationFailures` and returned as an error.
+
+`Suspicion` is a way to sort lookalikes, and doesn't prove anything. The points are judgement, tuned by looking at 20 well-known domains, where about a tenth of lookalikes came out `high`. An old domain taken over or re-registered can look innocent or suspicious, and a recent one may be harmless.
+
+Registrations come from a `RegistrationSource`. `RDAP` is one, which asks each registry's server using IANA's list, at up to 10 requests a second per server, and waits when a server says it's getting too many. Registries that aren't on that list have no data, which at the time of writing includes `.io`, `.co`, `.de`, and `.us`.
 
 ### Grades
 
@@ -279,6 +301,11 @@ DOMAIN      FUZZER    LOOKALIKE    ASCII        MAIL  SHARED-NS  BROKEN-DNS  ADD
 github.com  addition  githubb.com  githubb.com  yes   -          -           -
 ...
 
+$ robertparker -suspicious -o text paypal.com
+DOMAIN      SUSPICION  LOOKALIKE   ASCII       REGISTRAR        REGISTERED  REASONS
+paypal.com  high       paypcl.com  paypcl.com  NameCheap, Inc.  2026-04-10  has a different registrar from the original, was registered in the last year...
+...
+
 $ robertparker -checks email,tls,web -o text mozilla.org
 DOMAIN       GRADE  AREAS                SEVERITY  CHECK              MESSAGE
 mozilla.org  B      email=A,tls=A,web=B  info      dmarc-removed-tag  Uses the pct tag, which RFC 9989 removed.
@@ -292,8 +319,10 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
 | `-lookup` | Find which permutations of each domain exist, using DNS only. It makes about 2 lookups per permutation, so roughly 400 per domain, which takes about 4 seconds at the default `-rate`. |
+| `-registration` | Also compare each lookalike's registration with the original's, and rank them. Implies `-lookup`. It makes a request per lookalike at up to 10 a second per registry, so a well-known domain takes about 30 seconds in all. |
+| `-suspicious` | Only show lookalikes ranked `medium` or `high`. Implies `-registration`. |
 | `-checks list` | Comma-separated areas to check and grade: `email`, `tls`, and `web`. Off by default, since they make DNS lookups and web requests. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, or per lookalike with `-lookup`). Text can't show `-checks` with `-permute` or `-lookup`. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, or per lookalike with `-lookup` or `-registration`). Text can't show `-checks` with `-permute` or `-lookup`. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
 | `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 64 with `-checks`, which mostly wait on the network, or 8 with `-lookup`, where each domain already makes many lookups at once. |
 | `-unordered` | Print results as they finish, instead of in input order. |
 | `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, or 10m with `-lookup`, since most of its time is spent waiting behind `-rate`. |

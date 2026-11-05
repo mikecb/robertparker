@@ -11,7 +11,9 @@
 ## Domains
 - [x] Similarity generation like dnstwist: `Permute` generates lookalike permutations.
 - [x] Similarity lookup like dnstwist: `LookalikeAnalyzer` finds which permutations exist, using DNS only.
-- [ ] Look up the domain registration of each lookalike and compare it to the canonical domain. If they differ, the lookalike is more likely to be malicious. RDAP is the modern way to get this, and registrant details are often redacted, so the registrar and registration date may be what's left to compare.
+- [x] Look up the domain registration of each lookalike and compare it to the canonical domain: `RegistrationAnalyzer` ranks lookalikes using RDAP.
+- [ ] Get registration data for TLDs that aren't on IANA's RDAP list, like `.io`, `.co`, `.de`, and `.us`, which are `unknown` for now. That likely means WHOIS.
+- [ ] Check the ranking against known phishing domains. It's only been tuned by looking at results, with nothing to say how many real threats it catches.
 - [ ] Extend the homoglyph table beyond Latin, so non-Latin labels get homoglyph permutations.
 
 ## Abuse
@@ -74,6 +76,7 @@ DMARC (RFC 9989):
 - [x] `sp` and `np` don't weaken the policy for subdomains and non-existent subdomains.
 - [x] Flag test mode (`t=y`), and the removed `pct`, `rf`, and `ri` tags.
 - [x] `rua` reporting is set, and external report destinations authorize it.
+- [ ] Parked domains should have a DMARC policy that denies all sending.
 
 Transport:
 - [ ] MTA-STS: valid TXT record, policy served over HTTPS, and `mode=enforce` (RFC 8461).
