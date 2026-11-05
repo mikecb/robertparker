@@ -31,9 +31,18 @@ const (
 	recordTimeout  = 3 * time.Second
 	recordAttempts = 2
 
+	// directTimeout is how long a name server gets to answer for itself, which it does at once, unlike a resolver.
+	directTimeout = 2 * time.Second
+
 	// recordUDPSize is the UDP response size to ask for, which avoids fragmentation (DNS Flag Day 2020).
 	recordUDPSize = 1232
+
+	// maxNameJumps is how many compression pointers a name can follow, which stops names that point at each other.
+	maxNameJumps = 16
 )
+
+// labelEscaper writes a label of a name in presentation format, where a dot in a label is escaped.
+var labelEscaper = strings.NewReplacer(`\`, `\\`, `.`, `\.`)
 
 // recordTypes are the types to collect. Each has its own query, because ANY is unreliable (RFC 8482).
 var recordTypes = []struct {
@@ -101,6 +110,7 @@ func RecordsAnalyzer(server string, limiter *Limiter) Analyzer {
 type recordLookup struct {
 	server  string
 	limiter *Limiter
+	rewrite func(address string) string //Changes where direct queries go, for tests.
 
 	mu      sync.Mutex
 	address string //Where to send queries, once it's known.
@@ -185,57 +195,66 @@ func (r *recordLookup) answers(ctx context.Context, name string, code dnsmessage
 	if err != nil {
 		return nil, err
 	}
-	question, err := dnsmessage.NewName(strings.TrimSuffix(name, ".") + ".")
+	reply, err := r.ask(ctx, "udp", address, name, code, true, recordAttempts)
 	if err != nil {
 		return nil, err
 	}
-	query, id, err := buildQuery(question, code)
-	if err != nil {
-		return nil, err
-	}
-
-	var reply []byte
-	for attempt := 1; ; attempt++ {
-		err = r.limiter.Do(ctx, func(ctx context.Context) error {
-			var err error
-			reply, err = exchange(ctx, "udp", address, query, id)
-			return err
-		})
-		var netErr net.Error
-		if err == nil || attempt == recordAttempts || !errors.As(err, &netErr) || !netErr.Timeout() || ctx.Err() != nil {
-			break
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var header dnsmessage.Header
-	var answers []dnsmessage.Resource
-	if header, answers, err = parseReply(reply, id, question, code); err != nil {
-		return nil, err
-	}
-	if header.Truncated {
-		err = r.limiter.Do(ctx, func(ctx context.Context) error {
-			var err error
-			reply, err = exchange(ctx, "tcp", address, query, id)
-			return err
-		})
-		if err != nil {
-			return nil, err
-		}
-		if header, answers, err = parseReply(reply, id, question, code); err != nil {
-			return nil, err
-		}
-	}
-	switch header.RCode {
+	switch reply.header.RCode {
 	case dnsmessage.RCodeSuccess:
 	case dnsmessage.RCodeNameError:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("the server answered %s", header.RCode.GoString())
+		return nil, fmt.Errorf("the server answered %s", reply.header.RCode.GoString())
 	}
-	return answers, nil
+	return reply.answers, nil
+}
+
+// dnsReply is what's read from a reply.
+type dnsReply struct {
+	header               dnsmessage.Header
+	answers, authorities []dnsmessage.Resource
+}
+
+// ask sends a query to address, and returns the reply, whatever its response code. Over UDP, it makes up to attempts
+// tries if there's a timeout, and if the answer doesn't fit, it goes over TCP. A recursive query asks the server to find
+// the answer, and any other asks only what it knows itself.
+func (r *recordLookup) ask(ctx context.Context, network, address, name string, code dnsmessage.Type, recursive bool, attempts int) (dnsReply, error) {
+	question, err := dnsmessage.NewName(strings.TrimSuffix(name, ".") + ".")
+	if err != nil {
+		return dnsReply{}, err
+	}
+	query, id, err := buildQuery(question, code, recursive)
+	if err != nil {
+		return dnsReply{}, err
+	}
+
+	timeout := directTimeout
+	if recursive {
+		timeout = recordTimeout
+	}
+	var raw []byte
+	for attempt := 1; ; attempt++ {
+		err = r.limiter.Do(ctx, func(ctx context.Context) error {
+			var err error
+			raw, err = exchange(ctx, network, address, query, id, timeout)
+			return err
+		})
+		var netErr net.Error
+		if err == nil || attempt >= attempts || !errors.As(err, &netErr) || !netErr.Timeout() || ctx.Err() != nil {
+			break
+		}
+	}
+	if err != nil {
+		return dnsReply{}, err
+	}
+	reply, err := parseReply(raw, id, question, code)
+	if err != nil {
+		return dnsReply{}, err
+	}
+	if reply.header.Truncated && network == "udp" {
+		return r.ask(ctx, "tcp", address, name, code, recursive, 1)
+	}
+	return reply, nil
 }
 
 // compareRecords sorts values, comparing a leading number as a number, so that MX preference 5 comes before 10.
@@ -251,13 +270,13 @@ func compareRecords(a, b string) int {
 }
 
 // buildQuery makes a query, and returns it with its ID.
-func buildQuery(name dnsmessage.Name, code dnsmessage.Type) ([]byte, uint16, error) {
+func buildQuery(name dnsmessage.Name, code dnsmessage.Type, recursive bool) ([]byte, uint16, error) {
 	var random [2]byte
 	rand.Read(random[:])
 	id := binary.BigEndian.Uint16(random[:])
 	// Checking disabled asks a validating resolver for the records even if DNSSEC fails, since its failure looks the same
 	// as a server that's down, and a broken chain is something to report.
-	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, RecursionDesired: true, CheckingDisabled: true})
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, RecursionDesired: recursive, CheckingDisabled: recursive})
 	builder.EnableCompression()
 	if err := builder.StartQuestions(); err != nil {
 		return nil, 0, err
@@ -280,8 +299,8 @@ func buildQuery(name dnsmessage.Name, code dnsmessage.Type) ([]byte, uint16, err
 }
 
 // exchange sends a query, and returns the first reply with the right ID. Over TCP, messages have a length prefix.
-func exchange(ctx context.Context, network, address string, query []byte, id uint16) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
+func exchange(ctx context.Context, network, address string, query []byte, id uint16, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 	if err != nil {
@@ -325,30 +344,134 @@ func exchange(ctx context.Context, network, address string, query []byte, id uin
 }
 
 // parseReply checks that a reply answers the question, and returns its header and answers.
-func parseReply(reply []byte, id uint16, name dnsmessage.Name, code dnsmessage.Type) (dnsmessage.Header, []dnsmessage.Resource, error) {
+func parseReply(raw []byte, id uint16, name dnsmessage.Name, code dnsmessage.Type) (dnsReply, error) {
+	var reply dnsReply
 	var parser dnsmessage.Parser
-	header, err := parser.Start(reply)
-	if err != nil {
-		return header, nil, fmt.Errorf("bad reply: %w", err)
+	var err error
+	if reply.header, err = parser.Start(raw); err != nil {
+		return reply, fmt.Errorf("bad reply: %w", err)
 	}
-	if header.ID != id || !header.Response {
-		return header, nil, errors.New("bad reply: not an answer to this query")
+	if reply.header.ID != id || !reply.header.Response {
+		return reply, errors.New("bad reply: not an answer to this query")
 	}
 	questions, err := parser.AllQuestions()
 	if err != nil {
-		return header, nil, fmt.Errorf("bad reply: %w", err)
+		return reply, fmt.Errorf("bad reply: %w", err)
 	}
 	if len(questions) != 1 || questions[0].Type != code || !strings.EqualFold(questions[0].Name.String(), name.String()) {
-		return header, nil, errors.New("bad reply: it answers a different question")
+		return reply, errors.New("bad reply: it answers a different question")
 	}
-	if header.Truncated {
-		return header, nil, nil
+	if reply.header.Truncated {
+		return reply, nil
 	}
-	answers, err := parser.AllAnswers()
+	if reply.answers, err = readSection(&parser, raw, parser.AnswerHeader, parser.Answer); err != nil {
+		return reply, fmt.Errorf("bad reply: %w", err)
+	}
+	if reply.authorities, err = readSection(&parser, raw, parser.AuthorityHeader, parser.Authority); err != nil {
+		return reply, fmt.Errorf("bad reply: %w", err)
+	}
+	return reply, nil
+}
+
+// readSection reads the records of one section of a reply. SOA records are read by hand, because dnsmessage refuses a
+// name with a dot inside a label. That's legal, and normal in the mailbox of an SOA record, like first\.last.example.com,
+// and an empty answer carries one, so it would otherwise fail every lookup that finds nothing.
+func readSection(parser *dnsmessage.Parser, raw []byte, header func() (dnsmessage.ResourceHeader, error), resource func() (dnsmessage.Resource, error)) ([]dnsmessage.Resource, error) {
+	var resources []dnsmessage.Resource
+	for {
+		h, err := header()
+		if errors.Is(err, dnsmessage.ErrSectionDone) {
+			return resources, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if h.Type != dnsmessage.TypeSOA {
+			r, err := resource()
+			if err != nil {
+				return nil, err
+			}
+			resources = append(resources, r)
+			continue
+		}
+		unknown, err := parser.UnknownResource()
+		if err != nil {
+			return nil, err
+		}
+		soa, err := parseSOA(raw, unknown.Data)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, dnsmessage.Resource{Header: h, Body: soa})
+	}
+}
+
+// parseSOA parses the data of an SOA record. Its names can point to anywhere in message.
+func parseSOA(message, data []byte) (*dnsmessage.SOAResource, error) {
+	server, data, err := readName(message, data)
 	if err != nil {
-		return header, nil, fmt.Errorf("bad reply: %w", err)
+		return nil, err
 	}
-	return header, answers, nil
+	mailbox, data, err := readName(message, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 20 {
+		return nil, errors.New("SOA record is too short")
+	}
+	soa := &dnsmessage.SOAResource{
+		Serial:  binary.BigEndian.Uint32(data),
+		Refresh: binary.BigEndian.Uint32(data[4:]),
+		Retry:   binary.BigEndian.Uint32(data[8:]),
+		Expire:  binary.BigEndian.Uint32(data[12:]),
+		MinTTL:  binary.BigEndian.Uint32(data[16:]),
+	}
+	if soa.NS, err = dnsmessage.NewName(server); err != nil {
+		return nil, err
+	}
+	if soa.MBox, err = dnsmessage.NewName(mailbox); err != nil {
+		return nil, err
+	}
+	return soa, nil
+}
+
+// readName reads the name at the start of data, in presentation format, and returns it with what follows it.
+func readName(message, data []byte) (string, []byte, error) {
+	var labels []string
+	var rest []byte
+	followed := false
+	for jumps := 0; jumps <= maxNameJumps; {
+		if len(data) == 0 {
+			return "", nil, errors.New("name is cut off")
+		}
+		size := int(data[0])
+		switch {
+		case size == 0:
+			if !followed {
+				rest = data[1:]
+			}
+			return strings.Join(labels, ".") + ".", rest, nil
+		case size&0xC0 == 0xC0:
+			if len(data) < 2 {
+				return "", nil, errors.New("name is cut off")
+			}
+			if !followed {
+				rest, followed = data[2:], true
+			}
+			offset := int(binary.BigEndian.Uint16(data) & 0x3FFF)
+			if offset >= len(message) {
+				return "", nil, errors.New("name points outside the message")
+			}
+			data = message[offset:]
+			jumps++
+		case size&0xC0 != 0 || len(data) < 1+size:
+			return "", nil, errors.New("name has a bad label")
+		default:
+			labels = append(labels, labelEscaper.Replace(string(data[1:1+size])))
+			data = data[1+size:]
+		}
+	}
+	return "", nil, errors.New("name points to itself")
 }
 
 // presentName returns a name in lowercase, without its final dot, unless it's the root, which is just a dot.

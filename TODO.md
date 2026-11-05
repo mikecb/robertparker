@@ -31,16 +31,16 @@ The DNS, Email, TLS, and Web checks below all need these first. Checks marked (i
 Records:
 - [x] Collect A, AAAA, CNAME, NS, SOA, MX, TXT, CAA, DS, DNSKEY, and HTTPS/SVCB records, querying by type because ANY is unreliable (RFC 8482): `RecordsAnalyzer`.
 
-Delegation and zone health, in `DNSAnalyzer`. The open items here need to query a domain's nameservers directly, which it doesn't do yet:
+Delegation and zone health, in `DNSAnalyzer`:
 - [x] At least two nameservers, on separate networks (RFC 2182). Separate means not on one /24.
-- [ ] NS records at the parent and in the zone agree, and every nameserver answers for the zone, so there's no lame delegation.
-- [ ] SOA serials match across nameservers.
+- [x] NS records at the parent and in the zone agree, and every nameserver answers for the zone, so there's no lame delegation. Taken together, since each of two DNS providers may list only its own servers.
+- [x] SOA serials match across nameservers under one domain. Each DNS provider numbers a zone separately, so across domains a difference is information.
 - [x] SOA timers are in sensible ranges (RFC 1912). Contradictions cost a warning, but being outside the ranges is information, since half of the large sites sampled are.
 - [x] NS and MX targets resolve, and aren't CNAMEs (RFC 2181).
 - [x] A and AAAA records aren't private or loopback addresses.
-- [ ] Nameservers answer over TCP as well as UDP (RFC 7766).
+- [x] Nameservers answer over TCP as well as UDP (RFC 7766).
 - [x] Nameservers have IPv6 addresses, as information.
-- [ ] Nameservers answer over IPv6.
+- [x] Nameservers answer over IPv6. Tested against local servers, but not yet live, since the development network has no IPv6.
 - [ ] Flag wildcard records.
 - [ ] Dangling CNAMEs: targets that don't resolve, or point at unclaimed cloud services, which allows subdomain takeover.
 

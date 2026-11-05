@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"reflect"
 	"slices"
@@ -29,29 +30,36 @@ type dnsServer struct {
 	spoof      bool //Over UDP, send a reply with the wrong ID first.
 	wrongQuery bool //Answer a different question.
 
+	authorities      map[string][]dnsmessage.ResourceBody //In the authority section, by "name type".
+	notAuthoritative bool                                 //Don't claim to be an authority.
+	noTCP            bool                                 //Close TCP connections at once.
+
 	mu               sync.Mutex
 	queries          []string
 	checkingDisabled bool //A query asked for records even if DNSSEC validation fails.
+	recursive        bool //A query asked the server to find the answer.
 	tcp              atomic.Int64
 }
 
-// listenBoth listens on the same TCP and UDP port. TCP and UDP ports are handed
-// out separately, so the free TCP port may be taken for UDP, and then another
-// port has to be tried.
+// listenBoth listens on the same TCP and UDP port. It chooses the port itself, from
+// below the range the system hands out. Port 0 only finds a port that's free for
+// one protocol, and Windows reserves blocks of 100 ports in that range, so trying
+// the next one can fail many times in a row.
 func listenBoth(t *testing.T) (net.Listener, net.PacketConn) {
 	t.Helper()
 	var last error
 	for range 50 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := listener.Addr().(*net.TCPAddr).Port
+		port := 20000 + rand.IntN(12000)
 		packets, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			last = err
+			continue
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
 			return listener, packets
 		}
-		listener.Close()
+		packets.Close()
 		last = err
 	}
 	t.Fatal(last)
@@ -91,6 +99,9 @@ func startDNS(t *testing.T, s *dnsServer) string {
 			}
 			go func() {
 				defer conn.Close()
+				if s.noTCP {
+					return
+				}
 				var size [2]byte
 				if _, err := io.ReadFull(conn, size[:]); err != nil {
 					return
@@ -125,13 +136,23 @@ func (s *dnsServer) answer(query []byte, udp bool) ([]byte, uint16) {
 	defer s.mu.Unlock()
 	s.queries = append(s.queries, question.Name.String()+" "+question.Type.String())
 	s.checkingDisabled = s.checkingDisabled || message.CheckingDisabled
+	s.recursive = s.recursive || message.RecursionDesired
 	if s.silent > 0 {
 		s.silent--
 		return nil, 0
 	}
 	reply := dnsmessage.Message{
-		Header:    dnsmessage.Header{ID: message.ID, Response: true, RCode: s.rcode},
+		Header: dnsmessage.Header{
+			ID: message.ID, Response: true, RCode: s.rcode,
+			Authoritative: !message.RecursionDesired && !s.notAuthoritative,
+		},
 		Questions: message.Questions,
+	}
+	for _, body := range s.authorities[question.Name.String()+" "+question.Type.String()] {
+		reply.Authorities = append(reply.Authorities, dnsmessage.Resource{
+			Header: dnsmessage.ResourceHeader{Name: question.Name, Class: dnsmessage.ClassINET, TTL: 60},
+			Body:   body,
+		})
 	}
 	if s.wrongQuery {
 		reply.Questions = []dnsmessage.Question{{Name: dnsmessage.MustNewName("other.example."), Type: question.Type, Class: question.Class}}
@@ -343,6 +364,62 @@ func TestRecordsOfABareSuffix(t *testing.T) {
 	if len(queries) == 0 || !strings.HasPrefix(queries[0], "com. ") {
 		t.Errorf("queried %v", queries)
 	}
+}
+
+// A dot inside a label is legal, and normal in the mailbox of an SOA record, but dnsmessage refuses it. An empty answer
+// carries the SOA record, so it would fail every type that a domain doesn't have.
+func TestRecordsDotInSOAMailbox(t *testing.T) {
+	soa := append([]byte("\x03ns1\xc0\x0c"), "\x0afirst.last\xc0\x0c"...)
+	soa = append(soa, make([]byte, 20)...)
+	soa[len(soa)-1] = 60
+	body := &dnsmessage.UnknownResource{Type: dnsmessage.TypeSOA, Data: soa}
+	s := &dnsServer{
+		answers:     map[string][]dnsmessage.ResourceBody{"example.com. TypeSOA": {body}},
+		authorities: map[string][]dnsmessage.ResourceBody{"example.com. TypeTXT": {body}},
+	}
+	d, err := collect1(t, s, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `ns1.example.com first\.last.example.com 0 0 0 0 60`
+	if got := d.Records["SOA"]; len(got) != 1 || got[0] != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestReadName(t *testing.T) {
+	message := []byte("\x07example\x03com\x00")
+	tests := []struct {
+		name, data, want, rest string
+		bad                    bool
+	}{
+		{name: "plain", data: "\x01a\x03com\x00rest", want: "a.com.", rest: "rest"},
+		{name: "root", data: "\x00rest", want: ".", rest: "rest"},
+		{name: "pointer", data: "\x01a\xc0\x00rest", want: "a.example.com.", rest: "rest"},
+		{name: "dot in a label", data: "\x03a.b\x00", want: `a\.b.`},
+		{name: "backslash in a label", data: "\x03a\\b\x00", want: `a\\b.`},
+		{name: "cut off", data: "\x03ab", bad: true},
+		{name: "no end", data: "\x01a", bad: true},
+		{name: "half a pointer", data: "\xc0", bad: true},
+		{name: "pointer outside", data: "\xc0\xff", bad: true},
+		{name: "reserved label type", data: "\x80a\x00", bad: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, rest, err := robertparker.ReadName(message, []byte(tt.data))
+			if (err != nil) != tt.bad {
+				t.Fatalf("got error %v", err)
+			}
+			if got != tt.want || string(rest) != tt.rest {
+				t.Errorf("got %q, %q, want %q, %q", got, rest, tt.want, tt.rest)
+			}
+		})
+	}
+	t.Run("pointers in a loop", func(t *testing.T) {
+		if _, _, err := robertparker.ReadName([]byte("\xc0\x00"), []byte("\xc0\x00")); err == nil {
+			t.Error("no error")
+		}
+	})
 }
 
 func TestRecordsUnreachableServer(t *testing.T) {

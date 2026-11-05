@@ -71,22 +71,28 @@ var caaTags = []string{"issue", "issuewild", "iodef", "contactemail", "contactph
 // DNSSEC is tested, but never earns credit. A zone gets the same grade signed or unsigned, and only loses marks for
 // signing that's broken or weak, since a mistake there takes the whole domain offline.
 func DNSAnalyzer(server string, limiter *Limiter) Analyzer {
-	lookup := &recordLookup{server: server, limiter: limiter}
+	return newDNSAnalyzer(&recordLookup{server: server, limiter: limiter})
+}
+
+// newDNSAnalyzer returns a DNSAnalyzer that uses lookup.
+func newDNSAnalyzer(lookup *recordLookup) Analyzer {
+	parents := &parentZones{lookup: lookup}
 	return func(ctx context.Context, d *Domain) error {
 		zone := d.registrable()
 		if zone == "" {
 			return nil
 		}
-		c := dnsChecker{lookup: lookup, domain: d, zone: zone}
+		c := dnsChecker{lookup: lookup, parents: parents, domain: d, zone: zone}
 		return c.check(ctx)
 	}
 }
 
 // dnsChecker is the state of checking one domain.
 type dnsChecker struct {
-	lookup *recordLookup
-	domain *Domain
-	zone   string
+	lookup  *recordLookup
+	parents *parentZones
+	domain  *Domain
+	zone    string
 }
 
 // add records a finding about the domain's DNS.
@@ -121,22 +127,26 @@ func (c *dnsChecker) check(ctx context.Context) error {
 		return nil
 	}
 	c.domain.Checked(AreaDNS)
+	servers, err := c.checkNameServers(ctx, nameServers)
 	return errors.Join(
-		c.checkNameServers(ctx, nameServers),
+		err,
 		c.checkSOA(ctx),
 		c.checkAddresses(ctx),
 		c.checkMX(ctx),
 		c.checkCAA(ctx),
-		c.checkDNSSEC(ctx),
+		c.checkDNSSEC(ctx, servers),
+		c.checkDirect(ctx, servers), // Last, since a server that doesn't reply is what takes the longest.
 	)
 }
 
-// checkNameServers checks that the name servers resolve, and that one failure can't take them all down.
-func (c *dnsChecker) checkNameServers(ctx context.Context, hosts []string) error {
+// checkNameServers checks that the name servers resolve, and that one failure can't take them all down. It returns the
+// ones that can be reached from the internet.
+func (c *dnsChecker) checkNameServers(ctx context.Context, hosts []string) ([]nameServer, error) {
 	if len(hosts) == 1 {
 		c.add("dns-ns-count", SeverityWarning, rfcDNSServers, fmt.Sprintf("Only one name server, %s, so there's no backup if it fails.", hosts[0]))
 	}
 	var errs []error
+	var servers []nameServer
 	networks := map[netip.Prefix]bool{}
 	compared := 0 //Name servers with IPv4 addresses, the ones networks can be compared for.
 	ipv6, known := false, true
@@ -168,6 +178,12 @@ func (c *dnsChecker) checkNameServers(ctx context.Context, hosts []string) error
 		if len(ipv4) == 0 && len(addresses) == 0 {
 			c.add("dns-ns-resolve", SeverityFailure, rfcDNSServers, fmt.Sprintf("Name server %s doesn't resolve to an address.", host))
 		}
+		server := nameServer{host: host, ipv4: firstPublic(ipv4), ipv6: firstPublic(addresses)}
+		if server.ipv4 != "" || server.ipv6 != "" {
+			servers = append(servers, server)
+		} else if len(ipv4) > 0 || len(addresses) > 0 {
+			c.add("dns-ns-resolve", SeverityFailure, rfcDNSServers, fmt.Sprintf("Name server %s only has addresses that can't be reached from the internet.", host))
+		}
 		if len(ipv4) > 0 {
 			compared++
 		}
@@ -186,7 +202,7 @@ func (c *dnsChecker) checkNameServers(ctx context.Context, hosts []string) error
 	if known && !ipv6 {
 		c.add("dns-ns-ipv6", SeverityInfo, "", "None of the name servers has an IPv6 address.")
 	}
-	return errors.Join(errs...)
+	return servers, errors.Join(errs...)
 }
 
 // checkSOA checks that the SOA record exists, and that its timers make sense. Timers that contradict each other cost
@@ -241,8 +257,7 @@ func (c *dnsChecker) checkAddresses(ctx context.Context) error {
 		records, err := c.get(ctx, "dns-address", "RFC 6890", c.zone, code)
 		errs = append(errs, err)
 		for _, s := range records {
-			address, err := netip.ParseAddr(s)
-			if err == nil && (address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified()) {
+			if address, err := netip.ParseAddr(s); err == nil && internalAddress(address) {
 				c.add("dns-address", SeverityWarning, "RFC 6890", fmt.Sprintf("Publishes the address %s, which can't be reached from the internet.", s))
 			}
 		}
@@ -383,11 +398,14 @@ func digestDS(digestType int, zone string, key []byte) []byte {
 
 // checkDNSSEC tests how the zone is signed. It checks the first link of the chain, from the DS records at the parent to
 // the keys in the zone, which is what breaks when keys are changed carelessly. It doesn't verify signatures.
-func (c *dnsChecker) checkDNSSEC(ctx context.Context) error {
+func (c *dnsChecker) checkDNSSEC(ctx context.Context, servers []nameServer) error {
 	dsValues, err := c.get(ctx, "dnssec-chain", rfcDNSSEC, c.zone, typeDS)
 	keyValues, err2 := c.get(ctx, "dnssec-chain", rfcDNSSEC, c.zone, typeDNSKEY)
 	if err != nil || err2 != nil {
 		return errors.Join(err, err2)
+	}
+	if len(dsValues) > 0 && len(keyValues) == 0 {
+		keyValues = c.askForKeys(ctx, servers)
 	}
 	switch {
 	case len(dsValues) == 0 && len(keyValues) == 0:

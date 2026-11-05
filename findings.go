@@ -26,12 +26,13 @@ type Finding struct {
 // Grading starts each area at 100 and takes off a penalty per check that found something, so one warning costs a letter
 // and one failure costs most of them. These are the numbers to change to make grading stricter or more lenient.
 //
-// Web warnings cost less because there are many more of them, and most are about hardening rather than something
-// wrong. At the email penalty, wikipedia.org, microsoft.com, and mozilla.org all got an F, which says nothing.
+// Web and DNS warnings cost less because there are many more of them, and most are about hardening rather than something
+// wrong. At the email penalty, wikipedia.org, microsoft.com, and mozilla.org all got an F for the web, and tesla.com got
+// one for DNS that works, which says nothing.
 const (
-	warningPenalty    = 15
-	webWarningPenalty = 10
-	failurePenalty    = 40
+	warningPenalty          = 15
+	hardeningWarningPenalty = 10
+	failurePenalty          = 40
 )
 
 // gradeBands are the lowest scores for each grade, highest first. Anything lower is an F.
@@ -84,8 +85,8 @@ func Grade(d *Domain) string {
 // gradeArea returns the grade for one area, or "" if one of its checks couldn't finish.
 func gradeArea(d *Domain, area string) string {
 	warning := warningPenalty
-	if area == AreaWeb {
-		warning = webWarningPenalty
+	if area == AreaWeb || area == AreaDNS {
+		warning = hardeningWarningPenalty
 	}
 	// One problem can be found several ways, so each check costs once, at its worst.
 	penalties := map[string]int{}
