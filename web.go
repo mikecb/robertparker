@@ -23,8 +23,8 @@ import (
 	"time"
 )
 
-//TLS and Web checks. They come from ordinary requests to a domain's site, like a browser would make, and don't probe
-//for anything.
+//TLS and Web checks. They come from ordinary requests to a domain's site, like a browser would make. The one exception
+//is the prober in tlsprobe.go, which is off unless asked for.
 
 const (
 	// AreaTLS is the area of the TLS checks.
@@ -32,13 +32,14 @@ const (
 	// AreaWeb is the area of the Web checks.
 	AreaWeb = "web"
 
-	stdTLS        = "RFC 9325"
-	stdBaseline   = "CA/Browser Forum Baseline Requirements"
-	stdCT         = "RFC 6962"
-	stdHSTS       = "RFC 6797"
-	stdHeaders    = "OWASP Secure Headers Project"
-	stdCookies    = "RFC 6265"
-	stdSecurityTx = "RFC 9116"
+	stdTLS         = "RFC 9325"
+	stdBaseline    = "CA/Browser Forum Baseline Requirements"
+	stdPostQuantum = "FIPS 203"
+	stdCT          = "RFC 6962"
+	stdHSTS        = "RFC 6797"
+	stdHeaders     = "OWASP Secure Headers Project"
+	stdCookies     = "RFC 6265"
+	stdSecurityTx  = "RFC 9116"
 
 	userAgent    = "robertparker (+https://github.com/mikecb/robertparker)"
 	corsOrigin   = "https://robertparker.invalid" // An origin no site has reason to allow.
@@ -51,10 +52,15 @@ const (
 type WebConfig struct {
 	TLS, Web bool //Which checks to run.
 
+	// Probe adds to the TLS checks by offering a server old protocols and weak ciphers. Unlike the other checks, this is
+	// something a normal client wouldn't send, so it's separate.
+	Probe bool
+
 	// The rest are for testing, and default to the real thing.
-	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-	Roots       *x509.CertPool
-	Now         func() time.Time
+	DialContext  func(ctx context.Context, network, addr string) (net.Conn, error)
+	Roots        *x509.CertPool
+	Now          func() time.Time
+	ProbeTimeout time.Duration
 }
 
 // WebAnalyzer returns an Analyzer that requests a domain's site over HTTPS and HTTP, and adds Findings about its
@@ -67,6 +73,9 @@ type WebConfig struct {
 func WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer {
 	if config.Now == nil {
 		config.Now = time.Now
+	}
+	if config.ProbeTimeout == 0 {
+		config.ProbeTimeout = probeTimeout
 	}
 	var ciphers []uint16
 	for _, c := range append(tls.CipherSuites(), tls.InsecureCipherSuites()...) {
@@ -211,9 +220,13 @@ func (w *webChecker) run(ctx context.Context, name string) error {
 		return fmt.Errorf("request to %s: %w", host, err)
 	}
 
+	var probeErr error
 	if w.config.TLS {
 		w.domain.Checked(AreaTLS)
 		w.checkTLS(hops[0], host)
+		if w.config.Probe {
+			probeErr = w.probeTLS(ctx, host)
+		}
 	}
 	if w.config.Web {
 		w.domain.Checked(AreaWeb)
@@ -223,7 +236,7 @@ func (w *webChecker) run(ctx context.Context, name string) error {
 		w.checkHeaders(hops)
 		w.checkSecurityTxt(ctx, hops[len(hops)-1])
 	}
-	return nil
+	return probeErr
 }
 
 // addTLS and addWeb record a finding in their area.
@@ -252,8 +265,10 @@ func (w *webChecker) checkTLS(hop *webHop, host string) {
 		!(strings.HasPrefix(name, "TLS_ECDHE_") && (strings.Contains(name, "_GCM_") || strings.Contains(name, "CHACHA20"))) {
 		w.addTLS("tls-cipher", SeverityWarning, stdTLS, fmt.Sprintf("Negotiated %s, which isn't a forward-secret AEAD cipher.", name))
 	}
+	// A warning rather than information, because traffic recorded today can be decrypted once there's a large enough
+	// quantum computer, and most of the sites sampled already use it. It isn't a failure, since nothing is broken yet.
 	if state.CurveID != tls.X25519MLKEM768 {
-		w.addTLS("tls-post-quantum", SeverityInfo, stdTLS, "Didn't use post-quantum key exchange (X25519MLKEM768).")
+		w.addTLS("tls-post-quantum", SeverityWarning, stdPostQuantum, "Doesn't use post-quantum key exchange (X25519MLKEM768), so traffic recorded today could be decrypted by a future quantum computer.")
 	}
 	w.checkCertificate(state, host)
 }

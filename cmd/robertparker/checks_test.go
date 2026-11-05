@@ -209,6 +209,21 @@ func TestChecksWeb(t *testing.T) {
 	}
 }
 
+func TestChecksTLSProbe(t *testing.T) {
+	useSite(t)
+	code, out, errOut := runCLI(t, "", "-checks", "tls-probe", "good.com")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	got := decode(t, out)
+	if len(got) != 1 || got[0].Grades["tls"] == "" {
+		t.Fatalf("tls-probe should grade tls, got %+v", got)
+	}
+	if got[0].Grades["web"] != "" {
+		t.Errorf("tls-probe shouldn't grade web: %+v", got[0])
+	}
+}
+
 func TestChecksChooseAreas(t *testing.T) {
 	useSite(t)
 	f := goodResolver()

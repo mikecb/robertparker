@@ -98,11 +98,11 @@ Reputation:
 Applies to HTTPS, and to SMTP through STARTTLS. Based on RFC 9325, Mozilla's TLS recommendations, and NIST SP 800-52r2.
 
 Protocols and ciphers:
-- [ ] Prober with hand-built ClientHellos, since Go's `crypto/tls` can't offer SSLv3 or export ciphers.
-- [ ] TLS 1.3 and 1.2 are enabled. TLS 1.1, 1.0, and SSL are disabled (RFC 8996). This needs the prober: a normal connection only shows the best version a server offers, so old versions are only caught if nothing newer works.
-- [ ] Only forward-secret AEAD ciphers. Flag RSA key exchange, CBC, RC4, 3DES, NULL, and export ciphers. A normal connection only shows the one negotiated, which `tls-cipher` checks, so a full answer needs the prober.
-- [x] Report post-quantum key exchange (X25519MLKEM768) as information, not yet as a failure.
-- [ ] Secure renegotiation is supported (RFC 5746), and TLS compression is off.
+- [x] Prober with hand-built ClientHellos, since Go's `crypto/tls` can't offer SSLv3 or export ciphers: `-checks tls-probe`.
+- [x] TLS 1.1, 1.0, and SSL are disabled (RFC 8996). A warning, since modern clients refuse them, and sites like google.com keep them for old devices.
+- [x] Only forward-secret AEAD ciphers. Flag RSA key exchange, CBC, RC4, 3DES, NULL, and export ciphers. CBC is only information, since more than half of the sites sampled accept it.
+- [x] Warn if post-quantum key exchange (X25519MLKEM768) is missing, because of harvest-now-decrypt-later attacks. 57% of the sites sampled already use it. Make it a failure as adoption grows.
+- [x] Secure renegotiation is supported (RFC 5746), and TLS compression is off.
 
 Certificate:
 - [x] Chain is complete and leads to a trusted root, and the name matches the SAN.
