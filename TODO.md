@@ -46,7 +46,10 @@ Delegation and zone health, in `DNSAnalyzer`:
 - [x] Nameservers have IPv6 addresses, as information.
 - [x] Nameservers answer over IPv6. Tested against local servers, but not yet live, since the development network has no IPv6.
 - [ ] Flag wildcard records.
-- [ ] Dangling CNAMEs: targets that don't resolve, or point at unclaimed cloud services, which allows subdomain takeover.
+- [x] Dangling CNAMEs: targets that don't exist, on common subdomains and the name given, with a failure if anyone can claim them.
+- [ ] Find dangling CNAMEs on claimable services that still resolve, like GitHub Pages and S3, from the error page they serve. These need an HTTP request to each name.
+- [ ] Look at more of a domain's subdomains than the common ones, for example from certificate logs.
+- [ ] Check that the domains behind name servers and MX hosts are registered, since an expired one hands over the zone or its mail.
 
 DNSSEC:
 Test for DNSSEC and DANE, but they don't earn a better grade, and having them enabled could even count against a domain, given their reliability problems.

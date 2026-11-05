@@ -202,11 +202,7 @@ func (r *recordLookup) signedAnswers(ctx context.Context, name string, code dnsm
 }
 
 func (r *recordLookup) resolve(ctx context.Context, name string, code dnsmessage.Type, signed bool) ([]dnsmessage.Resource, error) {
-	address, err := r.serverAddress(ctx)
-	if err != nil {
-		return nil, err
-	}
-	reply, err := r.ask(ctx, "udp", address, name, code, true, signed, recordAttempts)
+	reply, err := r.query(ctx, name, code, signed)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +214,16 @@ func (r *recordLookup) resolve(ctx context.Context, name string, code dnsmessage
 		return nil, fmt.Errorf("the server answered %s", reply.header.RCode.GoString())
 	}
 	return reply.answers, nil
+}
+
+// query asks the resolver about name, and returns the reply, whatever its response code. A name whose CNAME leads nowhere
+// comes back with both the CNAME and a response code saying that the name doesn't exist.
+func (r *recordLookup) query(ctx context.Context, name string, code dnsmessage.Type, signed bool) (dnsReply, error) {
+	address, err := r.serverAddress(ctx)
+	if err != nil {
+		return dnsReply{}, err
+	}
+	return r.ask(ctx, "udp", address, name, code, true, signed, recordAttempts)
 }
 
 // dnsReply is what's read from a reply.

@@ -296,12 +296,15 @@ A type that can't be looked up is counted in `d.RecordFailures` and returned as 
 | `dns-mx-cname` | RFC 2181 | Mail servers aren't CNAMEs |
 | `dns-caa` | RFC 8659 | CAA records exist, with an `issue` property, so they limit who can issue certificates |
 | `dns-caa-critical` | RFC 8659 | No property CAs won't know is marked critical, which stops them issuing |
+| `dns-dangling` | | Common subdomains don't have a CNAME that points to a name that doesn't exist. See below for how much that matters |
 | `dnssec-status` | RFC 4034 | Whether the zone is signed, as information |
 | `dnssec-chain` | RFC 4034 | Keys exist, a DS record at the parent matches one of them, and the signatures validate all the way down from the root |
 | `dnssec-signature` | RFC 4034 | Each name server serves a key set signed by a key the DS records point to, and a signed SOA record, with signatures that verify and are in date |
 | `dnssec-expiry` | RFC 4034 | Those signatures have at least a tenth of their lifetime left |
 | `dnssec-ds-digest` | RFC 9904 | A DS record uses SHA-256 or better |
 | `dnssec-algorithm` | RFC 9904 | The keys don't use a deprecated algorithm, like RSA/SHA-1 |
+
+A CNAME that outlives what it points to hands the name to whoever claims the target next, who can then serve anything under the domain. `dns-dangling` is a failure if anyone can claim the target: its domain doesn't seem to be registered, or it's on a service that gives out names, like Azure. It's a warning for any other provider, since that depends on the provider, and information under the domain itself, where nobody else can claim it. Only the zone's owner can list its names, so this looks up about 30 common subdomains and the name given, and a dangling name elsewhere won't be found. It also only finds targets that don't exist, not ones that resolve to a provider's "site not found" page.
 
 DNSSEC never earns credit, given its reliability problems. A zone gets the same grade signed or unsigned, and only loses marks for signing that's broken or weak, since a mistake there takes the whole domain offline.
 
