@@ -1,6 +1,6 @@
 # Testing lookalike detection against real phishing
 
-November 2026. This measured how well `Permute`, `-lookup`, and the `Suspicion` ranking find and rate real phishing domains.
+November 2026. This measured how well `Permute`, `-lookup`, and the `Suspicion` ranking find and rate real phishing domains, and then how matching real names against brands does instead, which is where `-watch` and `-match` came from. See [Matching real names](#matching-real-names).
 
 **The main result: generating lookalikes finds very little real phishing.** Of 21,522 phishing domains that name a major brand, `Permute` could generate 18, or 0.1%. Real phishing mostly doesn't look like a typo of the brand. The ranking's signals do point the right way, but the evidence is thin, so the points weren't changed.
 
@@ -71,6 +71,72 @@ The points weren't changed, because 61 domains can't support it, and tuning on a
 - **`-lookup` answers a narrow question:** which typos of this brand exist? That's useful for finding squatters and for defensive registration, but it isn't phishing detection, and the docs shouldn't suggest it is.
 - **The better design runs the other way.** Rather than guessing names from a brand, take a stream of names that really exist, like newly issued certificates or new registrations, and match them against brands. The rules used to group the list above did that with a few dozen lines, over 392,000 names, and they catch longer names and typos on any TLD. It works for hostnames too, so it covers the subdomain group, and hosted platforms if the stream includes them.
 - **The ranking needs a fresher test.** Measuring it properly needs domains while they're still live, which means collecting them over time from a recent feed.
+
+## Matching real names
+
+This tried what the last section suggested: `BrandMatcher`, on 55 commonly phished brands. The list was chosen by hand again, and isn't quite the same as the one above, since that one wasn't kept. 9 other domains owned by those brands, like `amazonaws.com`, were passed as owned. Nothing was visited, and the live part used certificate logs, DNS, and RDAP only.
+
+**The main result: it finds names that `Permute` can't, with a lot of false matches that still need a person.** On the phishing list, it matched 28,364 names, compared with the 18 domains `Permute` could generate. In certificate logs, about 30% of a sample of real matches looked like imitations, which is roughly 8 a minute for these brands, but half of the raw matches were never registered at all.
+
+### How often it matches
+
+| Names | Total | Matches | Per 1,000 |
+|---|---:|---:|---:|
+| Phishing list | 392,178 | 28,528 | 73 |
+| Certificates, 6 minutes of logs | 257,180 | 638 | 2.5 |
+
+So a name on the phishing list is about 30 times as likely to match. Each brand and registrable domain counts once. The matcher handled about 100,000 names a second on one core, far more than the logs produce.
+
+| Kind | Phishing list |
+|---|---:|
+| `word` | 9,813 |
+| `subdomain` | 7,607 |
+| `embedded` | 6,416 |
+| `typo` | 3,774 |
+| `brand-domain` | 658 |
+| `other-suffix` | 134 |
+| `homoglyph` | 126 |
+
+Longer names and subdomains are most of it, which agrees with the first section. Only `typo`, `homoglyph`, and `other-suffix` are the kind of thing `Permute` is after.
+
+### What certificate logs show
+
+`-watch -registration` ran for 10 minutes, on the 15 logs that publish names tiles.
+
+| Result | Matches |
+|---|---:|
+| Doesn't exist in DNS | 482 |
+| `high` | 114 |
+| `medium` | 92 |
+| `low` | 80 |
+| `unknown` | 170 |
+| **Total** | **938** |
+
+**Half of the matches were never registered.** 480 of the 482 are `.ph` names, like `facebook-password-reset-safe-step1.ph`. `.ph` answers for every name: a made-up name gets the same address as these. So whoever runs that address could get a certificate for any name that's asked for, and something seems to be asking for a stream of brand names. What's asking wasn't worked out. These look exactly like phishing, and appear in the logs like everything else, so without DNS they'd be half of the results. `BrandRanker` now rates a name that doesn't exist in DNS `low`.
+
+**A brand that's a common word swamps the results.** `office.com`, `booking.com`, and `ledger.com` were 204 of the other 456, nearly all law offices, booking systems, and accounting software. Those three were left out of what follows. It's worth leaving out any brand like them.
+
+**About 30% of real matches look like imitations.** 100 of the remaining 252 were picked at random and judged by name alone, which is one opinion, and can't tell what's on a site:
+
+| Judged by name | Matches | Rated `high` |
+|---|---:|---:|
+| Looks like an imitation, like `gmail.sange.bond` or `npca.netflix.com.ikada4.aixxycode.id` | 30 | 11 |
+| Looks unrelated, like `krakensound.co.uk`, or a real integration, like `facebook-89836.zendesk.com` | 46 | 7 |
+| Can't tell, like `whatsapp.lagenius.in` | 24 | 7 |
+
+That would be about 75 of the 252 in 10 minutes. The rating helps a little, with 37% of imitations and 15% of unrelated names rated `high`, but it's far from a filter: nearly two thirds of imitations weren't `high`. This is a small sample with no way to check the answers, so it only shows the direction. `-suspicious` would also hide everything `unknown`, which includes 82 names on `pages.dev` and `workers.dev`, where many of the clearest imitations are, like `paypal-bill.workers.dev`.
+
+A recent registration may be a weaker sign here than it was for lookalikes, since a new certificate already leans towards new domains. That wasn't measured. Domains seen in one burst, like a run of `fedex.nobgz?.shop` names, each counted separately.
+
+### How much the logs cover
+
+The 15 logs were compared with the 5 tiled logs that don't publish names tiles. Of 15,360 certificates from those, 97% were also in the 15, including 99% of Let's Encrypt's, 96% of Google Trust Services', and 82% of DigiCert's. A certificate counted if any of its names was seen in the same few minutes, so this is approximate. RFC 6962 logs weren't compared.
+
+Following all 15 should take a few tens of KB a second, going by the size of a names tile and how fast the logs grow. That wasn't measured directly.
+
+### Limits of this part
+
+There's still no measure of what's missed. The phishing list can't show that, since it's a list of names rather than certificates. Matching certificate logs also misses a site under a wildcard certificate, whose name shows only as `*.example.com`, and a compromised site, whose name says nothing. Ten minutes is short, and bursts like the one in `.ph` come and go.
 
 ## Limits
 

@@ -14,8 +14,12 @@
 - [x] Look up the domain registration of each lookalike and compare it to the canonical domain: `RegistrationAnalyzer` ranks lookalikes using RDAP.
 - [ ] Get registration data for TLDs that aren't on IANA's RDAP list, like `.io`, `.co`, `.de`, and `.us`, which are `unknown` for now. That likely means WHOIS.
 - [x] Check the ranking against known phishing domains. See [docs/lookalike-evaluation.md](docs/lookalike-evaluation.md): `Permute` could generate only 0.1% of phishing domains that name a brand, and the ranking's signals point the right way, on thin evidence.
-- [ ] Match a stream of real domain names, like newly issued certificates or new registrations, against brands, rather than guessing names from a brand. This is what the evaluation points to as the way to find phishing.
-- [ ] Retest the ranking on phishing domains while they're still live, by collecting them over time from a recent feed. Only 61 of 368 sampled domains still existed.
+- [x] Match a stream of real domain names, like newly issued certificates or new registrations, against brands, rather than guessing names from a brand: `-watch` follows certificate logs, and `-match` reads any list of names.
+- [ ] Have `-watch` carry on from where it stopped, rather than from the end of each log.
+- [ ] Read certificate logs that don't publish names tiles, including RFC 6962 logs, to reach the certificates only they hold. Full entries cost over 20 times the bandwidth.
+- [ ] Rank names under private suffixes like `pages.dev`, which are a large share of what `-watch` finds, and are all `unknown`, since no registry knows about them.
+- [ ] Find a better sign than a recent registration for matches from certificate logs, since a new certificate already leans towards new domains.
+- [ ] Retest the ranking on phishing domains while they're still live, by collecting them over time from a recent feed, which `-watch` now makes possible. Only 61 of 368 sampled domains still existed.
 - [ ] Extend the homoglyph table beyond Latin, so non-Latin labels get homoglyph permutations.
 
 ## Abuse
