@@ -55,6 +55,13 @@ func (l *fakeLog) add(names ...string) {
 	l.names = append(l.names, names...)
 }
 
+// locked runs fn with the log to itself, which anything touching its fields needs, since the server runs on its own.
+func (l *fakeLog) locked(fn func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fn()
+}
+
 func (l *fakeLog) serve(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -179,7 +186,7 @@ func TestCTLogsFromList(t *testing.T) {
 		{"read only", now.Add(-time.Hour), now.Add(time.Hour), "readonly", false},
 	} {
 		l := newFakeLog(t, 300)
-		l.interval, l.state = [2]time.Time{tt.start, tt.end}, tt.state
+		l.locked(func() { l.interval, l.state = [2]time.Time{tt.start, tt.end}, tt.state })
 		r := l.reader()
 		r.Now = func() time.Time { return now }
 		logs, err := r.Logs(context.Background())
@@ -197,7 +204,7 @@ func TestCTLogsFromList(t *testing.T) {
 
 func TestCTLogsLeaveOutLogsWithoutNamesTiles(t *testing.T) {
 	l := newFakeLog(t, 300)
-	l.noTiles = true
+	l.locked(func() { l.noTiles = true })
 	r := l.reader()
 	logs, err := r.Logs(context.Background())
 	if err != nil || len(logs) != 0 {
@@ -210,12 +217,14 @@ func TestCTLogsLeaveOutLogsWithoutNamesTiles(t *testing.T) {
 
 func TestCTLogsBadList(t *testing.T) {
 	l := newFakeLog(t, 300)
-	l.body["/list.json"] = "not json"
+	l.locked(func() { l.body["/list.json"] = "not json" })
 	if _, err := l.reader().Logs(context.Background()); err == nil {
 		t.Error("expected an error")
 	}
-	l.gone["/list.json"] = true
-	delete(l.body, "/list.json")
+	l.locked(func() {
+		l.gone["/list.json"] = true
+		delete(l.body, "/list.json")
+	})
 	if _, err := l.reader().Logs(context.Background()); err == nil {
 		t.Error("expected an error")
 	}
@@ -233,11 +242,13 @@ func TestCTFollowsNewEntries(t *testing.T) {
 	if len(got) != 212 || got[0] != "new0.example" || got[211] != "new211.example" {
 		t.Errorf("got %d names: %q", len(got), got[:min(3, len(got))])
 	}
-	for agent := range l.agents {
-		if !strings.HasPrefix(agent, "robertparker ") {
-			t.Errorf("User-Agent %q", agent)
+	l.locked(func() {
+		for agent := range l.agents {
+			if !strings.HasPrefix(agent, "robertparker ") {
+				t.Errorf("User-Agent %q", agent)
+			}
 		}
-	}
+	})
 }
 
 func TestCTWaitsForFullTiles(t *testing.T) {
@@ -250,11 +261,13 @@ func TestCTWaitsForFullTiles(t *testing.T) {
 	if err != context.DeadlineExceeded || seen != 0 {
 		t.Errorf("got %v, and %d names", err, seen)
 	}
-	for path := range l.hits {
-		if strings.Contains(path, ".p/") {
-			t.Errorf("fetched partial tile %s", path)
+	l.locked(func() {
+		for path := range l.hits {
+			if strings.Contains(path, ".p/") {
+				t.Errorf("fetched partial tile %s", path)
+			}
 		}
-	}
+	})
 }
 
 func TestCTReadsPartialTilesAfterWaiting(t *testing.T) {
@@ -286,7 +299,7 @@ func TestCTReadsPartialTilesAfterWaiting(t *testing.T) {
 
 func TestCTPartialTileThatsGone(t *testing.T) {
 	l := newFakeLog(t, 256)
-	l.gone["/tile/names/001.p/2"] = true
+	l.locked(func() { l.gone["/tile/names/001.p/2"] = true })
 	r := l.reader()
 	r.Wait = 10 * time.Millisecond
 	more := make([]string, 254)
@@ -305,7 +318,7 @@ func TestCTPartialTileThatsGone(t *testing.T) {
 
 func TestCTKeepsTryingWithoutLosingEntries(t *testing.T) {
 	l := newFakeLog(t, 256)
-	l.missing["/tile/names/001"] = 1
+	l.locked(func() { l.missing["/tile/names/001"] = 1 })
 	var mu sync.Mutex
 	var problems []string
 	r := l.reader()
@@ -335,7 +348,7 @@ func TestCTKeepsPlaceAfterABadEntry(t *testing.T) {
 	for i := range 255 {
 		fmt.Fprintf(&tile, `{"Timestamp": 1, "DNS": ["%d.example"]}`+"\n", i)
 	}
-	l.body["/tile/names/001"] = "not json\n" + tile.String()
+	l.locked(func() { l.body["/tile/names/001"] = "not json\n" + tile.String() })
 	more := make([]string, 256)
 	for i := range more {
 		more[i] = "x.example"
