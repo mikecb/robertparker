@@ -17,6 +17,9 @@ func ProbeTLS(ctx context.Context, config WebConfig, d *Domain, host string) err
 	return w.probeTLS(ctx, host)
 }
 
+// TilePath exports tilePath to the tests.
+var TilePath = tilePath
+
 // ReadName exports readName to the tests.
 var ReadName = readName
 

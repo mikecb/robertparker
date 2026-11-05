@@ -32,6 +32,9 @@ and scores its Shannon entropy. With -permute, also generates lookalike
 permutations of each domain, for finding typosquatting and phishing domains.
 With -checks, also checks each domain's public configuration and grades it.
 
+With -watch or -match, the domains are brands to protect, and this reports new
+names that imitate them, from certificate logs or from a list of names.
+
 Domains are read from the arguments, then from -f, or from stdin if neither is
 given, one per line. Blank lines and lines starting with # are ignored. Input
 is streamed, so it can be any length.
@@ -74,6 +77,7 @@ var (
 	resolver      robertparker.Resolver           = net.DefaultResolver
 	lookalikes    robertparker.LookalikeResolver  = net.DefaultResolver
 	registrations robertparker.RegistrationSource = &robertparker.RDAP{}
+	certificates                                  = robertparker.CTReader{}
 )
 
 // textView is what -o text shows: a header, and the rows for a domain.
@@ -135,6 +139,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	records := fs.Bool("records", false, "collect each domain's DNS records")
 	registration := fs.Bool("registration", false, "compare each lookalike's registration with the original's, and rank them (implies -lookup)")
 	suspicious := fs.Bool("suspicious", false, "only show lookalikes ranked medium or high (implies -registration)")
+	watch := fs.Bool("watch", false, "treat domains as brands, and follow certificate logs for names that imitate them, until interrupted or -timeout runs out")
+	match := fs.String("match", "", "treat domains as brands, and report the names in `file` that imitate them (- for stdin)")
+	owned := fs.String("owned", "", "with -watch or -match, read other domains the brands own from `file`, which are never reported")
 	format := fs.String("o", "json", "output `format`: json (one object per line), pretty (indented JSON), or text (aligned columns)")
 	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "`number` of domains to analyze at once")
 	unordered := fs.Bool("unordered", false, "print results as they finish, instead of in input order")
@@ -177,7 +184,24 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	}
 	*registration = *registration || *suspicious
-	*lookup = *lookup || *registration
+	hunting := *watch || *match != ""
+	if hunting && (*permute || *lookup || *records || *checks != "") {
+		fmt.Fprintln(stderr, "robertparker: -watch and -match can't be used with -permute, -lookup, -records, or -checks")
+		return 2
+	}
+	if *watch && *match != "" {
+		fmt.Fprintln(stderr, "robertparker: -watch and -match can't be used together")
+		return 2
+	}
+	if *owned != "" && !hunting {
+		fmt.Fprintln(stderr, "robertparker: -owned needs -watch or -match")
+		return 2
+	}
+	if *match == "-" && (*file == "-" || *file == "" && fs.NArg() == 0) {
+		fmt.Fprintln(stderr, "robertparker: -match - reads names from stdin, so brands have to come from arguments or -f")
+		return 2
+	}
+	*lookup = *lookup || *registration && !hunting
 	checking := dnsChecks || email || web.TLS || web.Web
 	views := 0
 	for _, shown := range []bool{*permute || *lookup, checking, *records} {
@@ -213,6 +237,24 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	domains, readErr := readDomains(ctx, fs.Args(), in)
+
+	if hunting {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		h := hunt{
+			match: *match, owned: *owned, rank: *registration, suspicious: *suspicious, format: *format, dnsServer: *dnsServer, rate: *rate,
+			workers: lookupWorkers, stdin: stdin, stdout: stdout, stderr: stderr,
+		}
+		if set["workers"] {
+			h.workers = *workers
+		}
+		if set["timeout"] {
+			var stop context.CancelFunc
+			ctx, stop = context.WithTimeout(ctx, *timeout)
+			defer stop()
+		}
+		return h.run(ctx, domains, readErr)
+	}
 
 	opts := robertparker.Options{
 		Workers:   *workers,

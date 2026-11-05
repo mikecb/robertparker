@@ -20,6 +20,7 @@ I wrote it because I did not find a good library that performed these simple fun
 | `WebAnalyzer(config WebConfig, limiter *Limiter) Analyzer` | Requests a domain's site, and adds to `d.Findings` about its TLS setup and HTTP headers. See [TLS and Web checks](#tls-and-web-checks). |
 | `LookalikeAnalyzer(resolver LookalikeResolver, limiter *Limiter) Analyzer` | Finds which permutations of a domain exist, and stores them in `d.Lookalikes`. See [Lookalike lookup](#lookalike-lookup). |
 | `RegistrationAnalyzer(source RegistrationSource, now func() time.Time) Analyzer` | Compares each lookalike's registration with the domain's, and ranks them. See [Ranking lookalikes](#ranking-lookalikes). |
+| `NewBrandMatcher(brands, owned []string) *BrandMatcher` | Finds names that imitate brands, from certificate logs or a list of names. See [Finding brand imitations](#finding-brand-imitations). |
 | `RecordsAnalyzer(server string, limiter *Limiter) Analyzer` | Collects a domain's DNS records into `d.Records`. See [DNS records](#dns-records). |
 | `DNSAnalyzer(server string, limiter *Limiter) Analyzer` | Checks the records of a domain's zone, and adds to `d.Findings`. See [DNS checks](#dns-checks). |
 | `Grade(d *Domain) string` | Works out letter grades from `d.Findings`. Stores them in `d.Grades` and `d.Grade`, and returns the overall one. See [Grades](#grades). |
@@ -225,7 +226,41 @@ Each query has its own 5 second timeout, which starts after the limiter, since a
 
 Only registered names are found, so expect a lot for a well-known brand: much of what's found will be defensive registrations and parking pages. `Lookalikes` shows what exists, not what's malicious, and doesn't affect grades.
 
-This finds squatters on typos of a domain. It doesn't find most phishing, which rarely looks like a typo: `Permute` could generate only 0.1% of the phishing domains naming a major brand in [this evaluation](docs/lookalike-evaluation.md).
+This finds squatters on typos of a domain. It doesn't find most phishing, which rarely looks like a typo: `Permute` could generate only 0.1% of the phishing domains naming a major brand in [this evaluation](docs/lookalike-evaluation.md). For that, see [Finding brand imitations](#finding-brand-imitations).
+
+### Finding brand imitations
+
+`BrandMatcher` runs the other way from `Permute`. Rather than guessing names from a brand, it takes names that really exist, and asks if they imitate a brand.
+
+```go
+matcher := robertparker.NewBrandMatcher([]string{"paypal.com"}, []string{"paypalobjects.com"})
+reader := &robertparker.CTReader{}
+for r := range matcher.Find(ctx, reader.Names, nil, 8) {
+	fmt.Println(r.Match.Brand, r.Match.Fuzzer, r.Match.ASCII)
+}
+```
+
+`Find` matches the names from a `NameSource`, and sends each brand and registrable domain once, since a domain can have thousands of names. `CTReader.Names` is one source, and `NamesFrom` reads a list. A match's `Fuzzer` says how it matches, and the first of these that fits is used:
+
+| Kind | Example | Meaning |
+| --- | --- | --- |
+| `other-suffix` | `paypal.xyz` | The same name on another suffix |
+| `brand-domain` | `paypal.com.example.net` | The whole brand domain in a subdomain |
+| `homoglyph` | `paypa1.com`, `pay-pal.com` | It reads the same, with lookalike characters or hyphens |
+| `typo` | `metanask.com`, `secure-paypall.com` | One edit or swapped letters from the brand, or two for 9 letters or more. It can be a word of a longer name |
+| `word` | `paypal-login.com` | The brand is a word of a longer name |
+| `embedded` | `paypalsecure.com` | The brand runs into a longer word |
+| `subdomain` | `paypal.example.net` | The brand is a word of a subdomain |
+
+Short names match too much, so a few rules keep that down, set by looking at real names. Typos need the brand to have 5 letters, or 6 inside a longer name, and need the same first letter, since nearly all others are real words, like `finance` for `binance` and `email` for `gmail`. Only brands of 6 letters or more count as `embedded`, so `apple` doesn't match `pineapple`. A brand that's also a common word still matches a lot: `office`, `booking`, and `ledger` were 45% of the registered matches in the [evaluation](docs/lookalike-evaluation.md#matching-real-names), so it's worth leaving out brands like them.
+
+Pass the brands' other domains as the second argument, since `amazon.com` otherwise matches all of `amazonaws.com`. Names under a brand or those domains never match. Names under private suffixes do, since anyone can pick `paypal-login.vercel.app`.
+
+`CTReader` follows Certificate Transparency logs, which record nearly every certificate, so new names appear there when their certificates are issued, often before they're used. It reads only the current logs on Chrome's list that publish [names tiles](https://github.com/FiloSottile/sunlight/blob/main/names-tiles.md), which hold just the names, at under 5% of the size of the full entries. 97% of a sample of 15,360 certificates from tiled logs without names tiles were also in the ones it reads, though older-style RFC 6962 logs weren't compared. It reads one tile at a time from each log, skips no entries when a log is down, and checks for new logs daily. It doesn't verify signatures or proofs, which is for checking that logs are honest.
+
+`BrandRanker.Rank` can be passed to `Find` to rate each match with the signs in [Ranking lookalikes](#ranking-lookalikes). It looks up the registrable domain using DNS and RDAP only, and never connects to it. Names under a private suffix are `unknown`, since no registry knows about them. Names that don't exist in DNS are `low`, which matters more than it sounds: `.ph` answers for every name, so about half of what the logs showed in the [evaluation](docs/lookalike-evaluation.md#matching-real-names) was never registered. Use `-registration` or `-suspicious` to set those aside, keeping in mind that `-suspicious` also hides everything `unknown`.
+
+A match is a name to look at, and doesn't prove anything. A certificate only shows that someone controls a name, and a log only shows names with certificates, so a site without HTTPS never appears. Shops and tools that really do work with a brand match too.
 
 ### DNS records
 
@@ -401,6 +436,13 @@ DOMAIN      SUSPICION  LOOKALIKE   ASCII       REGISTRAR        REGISTERED  REAS
 paypal.com  high       paypcl.com  paypcl.com  NameCheap, Inc.  2026-04-10  has a different registrar from the original, was registered in the last year...
 ...
 
+$ robertparker -watch -suspicious -owned owned.txt -o text -f brands.txt
+SEEN                 BRAND       KIND  SUSPICION  NAME              ASCII             SOURCE                        REASONS
+2026-11-05 16:44:53  paypal.com  word  high       paypal-login.top  paypal-login.top  Let's Encrypt Sycamore2027h1  ...
+...
+
+$ robertparker -match new-domains.txt -f brands.txt > matches.jsonl
+
 $ robertparker -checks email,tls,web -o text mozilla.org
 DOMAIN       GRADE  AREAS                SEVERITY  CHECK              MESSAGE
 mozilla.org  B      email=A,tls=A,web=B  info      dmarc-removed-tag  Uses the pct tag, which RFC 9989 removed.
@@ -414,20 +456,23 @@ mozilla.org  B      email=A,tls=A,web=B  warning   web-csp            Content-Se
 | `-f file` | Read domains from `file`, one per line, after any given as arguments. `-` reads stdin. |
 | `-permute` | Also generate lookalike permutations of each domain. |
 | `-lookup` | Find which permutations of each domain exist, using DNS only. It makes about 2 lookups per permutation, so roughly 400 per domain, which takes about 4 seconds at the default `-rate`. |
-| `-registration` | Also compare each lookalike's registration with the original's, and rank them. Implies `-lookup`. It makes a request per lookalike at up to 10 a second per registry, so a well-known domain takes about 30 seconds in all. |
+| `-registration` | Also compare each lookalike's registration with the original's, and rank them. Implies `-lookup`, unless used with `-watch` or `-match`. It makes a request per lookalike at up to 10 a second per registry, so a well-known domain takes about 30 seconds in all. |
 | `-suspicious` | Only show lookalikes ranked `medium` or `high`. Implies `-registration`. |
+| `-watch` | Treat the domains as brands, and follow certificate logs for [names that imitate them](#finding-brand-imitations), printing each as it's found, until interrupted or `-timeout` runs out, which isn't an error. Works with `-registration` and `-suspicious`. Not with `-permute`, `-lookup`, `-records`, or `-checks`. |
+| `-match file` | The same, but for the names in `file`, one per line. `-` reads stdin, and then brands have to come from arguments or `-f`. |
+| `-owned file` | With `-watch` or `-match`, read the brands' other domains from `file`. Names under them are never reported. |
 | `-records` | Collect each domain's DNS records. |
 | `-checks list` | Comma-separated areas to check and grade: `dns`, `email`, `tls`, and `web`. `tls-probe` is `tls` plus [offering servers old protocols and weak ciphers](#probing-tls). Off by default, since they make DNS lookups and web requests. |
-| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, per record with `-records`, or per lookalike with `-lookup` or `-registration`). Text can only show one of those at a time, but JSON can hold them all. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. |
-| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks` or `-records`, or 8 with `-lookup`, where each domain already makes many lookups at once. |
+| `-o format` | `json` (default, one object per line), `pretty` (indented JSON), or `text` (aligned columns, one row per domain, or per permutation with `-permute`, per finding with `-checks`, per record with `-records`, or per lookalike with `-lookup` or `-registration`). Text can only show one of those at a time, but JSON can hold them all. Text is aligned in blocks of 1000 rows, so memory stays bounded on large inputs. With `-watch` or `-match`, text is tab-separated instead, one row per match, written straight away. |
+| `-workers number` | Domains to analyze at once. Defaults to the number of CPUs, 16 with `-checks` or `-records`, or 8 with `-lookup`, where each domain already makes many lookups at once, or matches to rank at once with `-watch` or `-match`. |
 | `-unordered` | Print results as they finish, instead of in input order. |
-| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, 30s with `-checks dns` or `tls-probe`, or 10m with `-lookup`, since most of their time is spent waiting behind `-rate` or on servers that stay silent. |
+| `-timeout time` | Time allowed for the checks on one domain. Defaults to 10s, 30s with `-checks dns` or `tls-probe`, or 10m with `-lookup`, since most of their time is spent waiting behind `-rate` or on servers that stay silent. With `-watch` or `-match`, the time allowed for the whole run, which has no limit by default. |
 | `-rate number` | DNS lookups and web requests per second, or 0 for no limit. Defaults to 100. |
 | `-resolver host` | DNS server to use instead of the system's, as `host` or `host:port`, including for web requests. Home routers often can't handle the large responses of big domains, which then show as `unknown`. |
 
 The tool runs with a garbage collection target of 400 instead of Go's default of 100, which is about 40% faster with `-permute` for around 25 MB more memory. Set the `GOGC` environment variable to override it.
 
-It exits with 1 if it can't read its input or an analysis fails, 2 for invalid flags, and 130 if interrupted with Ctrl-C, after printing the results it has.
+It exits with 1 if it can't read its input or an analysis fails, 2 for invalid flags, and 130 if interrupted with Ctrl-C, after printing the results it has. Stopping `-watch` isn't an interruption, since it only stops that way.
 
 ## Building and testing
 
