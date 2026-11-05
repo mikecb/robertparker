@@ -200,9 +200,7 @@ func TestDNSNeverAsksForCNAMEs(t *testing.T) {
 	if _, err := checkDNS(t, s); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, q := range s.queries {
+	for _, q := range s.asked() {
 		if strings.HasSuffix(q, "TypeCNAME") {
 			t.Errorf("asked %q", q)
 		}
@@ -220,9 +218,7 @@ func TestDNSNullMX(t *testing.T) {
 	if got := d.Grades[robertparker.AreaDNS]; got != "A" {
 		t.Errorf("got grade %q from %+v", got, d.Findings)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, q := range s.queries {
+	for _, q := range s.asked() {
 		if strings.HasPrefix(q, ". ") {
 			t.Errorf("looked up the root: %q", q)
 		}
@@ -483,8 +479,8 @@ func TestDNSBareSuffix(t *testing.T) {
 	if err := robertparker.DNSAnalyzer(address, nil)(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Findings) != 0 || len(s.queries) != 0 {
-		t.Errorf("got %+v after %v", d.Findings, s.queries)
+	if queries := s.asked(); len(d.Findings) != 0 || len(queries) != 0 {
+		t.Errorf("got %+v after %v", d.Findings, queries)
 	}
 }
 

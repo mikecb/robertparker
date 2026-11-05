@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,13 @@ func startDNS(t *testing.T, s *dnsServer) string {
 		}
 	}()
 	return s.addr
+}
+
+// asked returns the queries so far.
+func (s *dnsServer) asked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.queries)
 }
 
 func (s *dnsServer) answer(query []byte, udp bool) ([]byte, uint16) {
@@ -260,6 +268,8 @@ func TestRecordsPartialFailure(t *testing.T) {
 	if len(d.Records) != 12 {
 		t.Errorf("got %d types", len(d.Records))
 	}
+	// A new zone, because the first server is still running, and it reads the old one.
+	zone = exampleZone()
 	delete(zone, "example.com. 257")
 	d, err = collect1(t, &dnsServer{answers: zone, rcode: dnsmessage.RCodeRefused}, "example.com")
 	if err == nil || d.RecordFailures != 1 || len(d.Records) != 11 {
@@ -304,31 +314,34 @@ func TestRecordsRejectAnswersToOtherQuestions(t *testing.T) {
 func TestRecordsQueryOneTypeAtATime(t *testing.T) {
 	s := &dnsServer{}
 	collect1(t, s, "example.com")
+	queries := s.asked()
 	seen := map[string]bool{}
-	for _, q := range s.queries {
+	for _, q := range queries {
 		seen[q] = true
 		if strings.HasSuffix(q, "TypeALL") {
 			t.Error("ANY isn't reliable, and shouldn't be used")
 		}
 	}
 	if len(seen) != 12 {
-		t.Errorf("got %d distinct queries: %v", len(seen), s.queries)
+		t.Errorf("got %d distinct queries: %v", len(seen), queries)
 	}
 }
 
 func TestRecordsUseTheHostGivenInPunycode(t *testing.T) {
 	s := &dnsServer{}
 	collect1(t, s, "api.δοκιμή.com")
-	if len(s.queries) == 0 || !strings.HasPrefix(s.queries[0], "api.xn--jxalpdlp.com. ") {
-		t.Errorf("queried %v", s.queries)
+	queries := s.asked()
+	if len(queries) == 0 || !strings.HasPrefix(queries[0], "api.xn--jxalpdlp.com. ") {
+		t.Errorf("queried %v", queries)
 	}
 }
 
 func TestRecordsOfABareSuffix(t *testing.T) {
 	s := &dnsServer{}
 	collect1(t, s, "com")
-	if len(s.queries) == 0 || !strings.HasPrefix(s.queries[0], "com. ") {
-		t.Errorf("queried %v", s.queries)
+	queries := s.asked()
+	if len(queries) == 0 || !strings.HasPrefix(queries[0], "com. ") {
+		t.Errorf("queried %v", queries)
 	}
 }
 
