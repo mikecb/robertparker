@@ -51,10 +51,12 @@ Delegation and zone health, in `DNSAnalyzer`:
 DNSSEC:
 Test for DNSSEC and DANE, but they don't earn a better grade, and having them enabled could even count against a domain, given their reliability problems.
 - [x] Zone is signed, and a DS record at the parent matches a key in the zone.
-- [ ] Signatures validate, along the whole chain.
+- [x] Signatures validate, along the whole chain, from the root's trust anchors down to each name server's keys and SOA record.
+- [ ] Validate the rest of the zone's records, and the NSEC or NSEC3 proofs that a name doesn't exist. Only the keys and the SOA record are checked for now.
 - [x] Signing algorithm isn't a deprecated one like RSA/SHA-1 (RFC 9904).
 - [x] DS digest is SHA-256 or better, not SHA-1.
-- [ ] RRSIGs aren't expired or about to expire.
+- [x] RRSIGs aren't expired or about to expire. "About to" means under a tenth of their lifetime left, since signers range from hours to months.
+- [ ] Verify Ed448 signatures, which Go's standard library can't do. They're reported as unchecked.
 - [ ] NSEC3 uses zero extra iterations and no salt (RFC 9276).
 
 Certificate issuance:

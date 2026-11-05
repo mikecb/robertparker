@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"slices"
 	"strings"
@@ -241,16 +242,11 @@ func TestDNSIPv6OnlyNameServersResolve(t *testing.T) {
 	}
 }
 
-// signedKey is a DNSKEY record, and the same record as the DS digests cover it.
-func signedKey(algorithm byte) (*dnsmessage.UnknownResource, []byte) {
-	data := append([]byte{0x01, 0x01, 3, algorithm}, "made-up public key"...)
-	return &dnsmessage.UnknownResource{Type: 48, Data: data}, data
-}
-
 // dsFor returns a DS record for key, using SHA-256 or, if weak, SHA-1.
 func dsFor(key []byte, algorithm byte, weak bool) *dnsmessage.UnknownResource {
 	message := append([]byte("\x07example\x03com\x00"), key...)
-	data := []byte{0x12, 0x34, algorithm, 2}
+	data := binary.BigEndian.AppendUint16(nil, keyTag(key))
+	data = append(data, algorithm, 2)
 	if weak {
 		sum := sha1.Sum(message)
 		data[3] = 1
@@ -271,9 +267,7 @@ func TestDNSSECEarnsNoCredit(t *testing.T) {
 		return zone
 	}
 	unsigned, signed := flawed(), flawed()
-	key, data := signedKey(13)
-	signed[zoneDNSKEY] = []dnsmessage.ResourceBody{key}
-	signed[zoneDS] = []dnsmessage.ResourceBody{dsFor(data, 13, false)}
+	signZone(signed, newTestKey(t, 13, entryFlags))
 
 	for zone, want := range map[*map[string][]dnsmessage.ResourceBody]string{&unsigned: "B", &signed: "B"} {
 		d, err := checkDNS(t, &dnsServer{answers: *zone})
@@ -290,31 +284,38 @@ func TestDNSSECEarnsNoCredit(t *testing.T) {
 }
 
 func TestDNSSECProblems(t *testing.T) {
-	key, data := signedKey(13)
-	oldKey, oldData := signedKey(5)
+	key := newTestKey(t, 13, entryFlags)
+	oldKey := newTestKey(t, 5, entryFlags)
 	other := dsFor([]byte("a different key"), 13, false)
+	wrongTag := dsFor(key.data, 13, false)
+	wrongTag.Data = slices.Concat([]byte{wrongTag.Data[0] ^ 1}, wrongTag.Data[1:])
 	// A rollover publishes the new DS beside the old one, and that's fine as long as one matches.
-	keys := func(k *dnsmessage.UnknownResource) []dnsmessage.ResourceBody { return []dnsmessage.ResourceBody{k} }
+	list := func(k ...dnsmessage.ResourceBody) []dnsmessage.ResourceBody { return k }
 
 	tests := []struct {
 		name     string
-		ds, keys []dnsmessage.ResourceBody
+		ds       []dnsmessage.ResourceBody
+		key      *testKey
 		check    string
 		severity robertparker.Severity
 		grade    string
 	}{
-		{"keys with no DS", nil, keys(key), "dnssec-status", robertparker.SeverityInfo, "A"},
-		{"DS with no keys", keys(dsFor(data, 13, false)), nil, "dnssec-chain", robertparker.SeverityFailure, "D"},
-		{"DS that matches no key", keys(other), keys(key), "dnssec-chain", robertparker.SeverityFailure, "D"},
-		{"one DS of two matches", []dnsmessage.ResourceBody{other, dsFor(data, 13, false)}, keys(key), "dnssec-status", robertparker.SeverityInfo, "A"},
-		{"SHA-1 digest", keys(dsFor(data, 13, true)), keys(key), "dnssec-ds-digest", robertparker.SeverityWarning, "A"},
-		{"SHA-1 digest beside SHA-256", []dnsmessage.ResourceBody{dsFor(data, 13, true), dsFor(data, 13, false)}, keys(key), "dnssec-status", robertparker.SeverityInfo, "A"},
-		{"deprecated algorithm", keys(dsFor(oldData, 5, false)), keys(oldKey), "dnssec-algorithm", robertparker.SeverityWarning, "A"},
+		{"keys with no DS", nil, key, "dnssec-status", robertparker.SeverityInfo, "A"},
+		{"DS with no keys", list(dsFor(key.data, 13, false)), nil, "dnssec-chain", robertparker.SeverityFailure, "D"},
+		{"DS that matches no key", list(other), key, "dnssec-chain", robertparker.SeverityFailure, "D"},
+		{"DS with the right digest and the wrong key tag", list(wrongTag), key, "dnssec-chain", robertparker.SeverityFailure, "D"},
+		{"one DS of two matches", list(other, dsFor(key.data, 13, false)), key, "dnssec-status", robertparker.SeverityInfo, "A"},
+		{"SHA-1 digest", list(dsFor(key.data, 13, true)), key, "dnssec-ds-digest", robertparker.SeverityWarning, "A"},
+		{"SHA-1 digest beside SHA-256", list(dsFor(key.data, 13, true), dsFor(key.data, 13, false)), key, "dnssec-status", robertparker.SeverityInfo, "A"},
+		{"deprecated algorithm", list(dsFor(oldKey.data, 5, false)), oldKey, "dnssec-algorithm", robertparker.SeverityWarning, "A"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			zone := healthyZone()
-			zone[zoneDS], zone[zoneDNSKEY] = tt.ds, tt.keys
+			if tt.key != nil {
+				signZone(zone, tt.key)
+			}
+			zone[zoneDS] = tt.ds
 			d, err := checkDNS(t, &dnsServer{answers: zone})
 			if err != nil {
 				t.Fatal(err)
@@ -362,7 +363,7 @@ func TestDNSSECRealKey(t *testing.T) {
 		tamper   byte
 		severity robertparker.Severity
 	}{
-		{"as published", 0, ""},
+		{"as published", 0, robertparker.SeverityInfo}, // Only that the chain above wasn't checked.
 		{"tampered with", 1, robertparker.SeverityFailure},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -492,11 +493,9 @@ func TestDNSBareSuffix(t *testing.T) {
 
 func TestDNSFindingsAreInAStableOrder(t *testing.T) {
 	zone := healthyZone()
-	key, data := signedKey(1)
-	second, secondData := signedKey(5)
-	third, _ := signedKey(7)
-	zone[zoneDNSKEY] = []dnsmessage.ResourceBody{key, second, third}
-	zone[zoneDS] = []dnsmessage.ResourceBody{dsFor(data, 1, false), dsFor(secondData, 5, false)}
+	key, second, third := newTestKey(t, 1, entryFlags), newTestKey(t, 5, entryFlags), newTestKey(t, 7, entryFlags)
+	zone[zoneDNSKEY] = []dnsmessage.ResourceBody{key.record(), second.record(), third.record()}
+	zone[zoneDS] = []dnsmessage.ResourceBody{dsFor(key.data, 1, false), dsFor(second.data, 5, false)}
 	var first string
 	for range 20 {
 		d, err := checkDNS(t, &dnsServer{answers: zone})

@@ -297,11 +297,15 @@ A type that can't be looked up is counted in `d.RecordFailures` and returned as 
 | `dns-caa` | RFC 8659 | CAA records exist, with an `issue` property, so they limit who can issue certificates |
 | `dns-caa-critical` | RFC 8659 | No property CAs won't know is marked critical, which stops them issuing |
 | `dnssec-status` | RFC 4034 | Whether the zone is signed, as information |
-| `dnssec-chain` | RFC 4034 | Keys exist, and a DS record at the parent matches one of them |
+| `dnssec-chain` | RFC 4034 | Keys exist, a DS record at the parent matches one of them, and the signatures validate all the way down from the root |
+| `dnssec-signature` | RFC 4034 | Each name server serves a key set signed by a key the DS records point to, and a signed SOA record, with signatures that verify and are in date |
+| `dnssec-expiry` | RFC 4034 | Those signatures have at least a tenth of their lifetime left |
 | `dnssec-ds-digest` | RFC 9904 | A DS record uses SHA-256 or better |
 | `dnssec-algorithm` | RFC 9904 | The keys don't use a deprecated algorithm, like RSA/SHA-1 |
 
-DNSSEC never earns credit, given its reliability problems. A zone gets the same grade signed or unsigned, and only loses marks for signing that's broken or weak, since a mistake there takes the whole domain offline. Signatures themselves aren't verified, only the link from the DS record to the keys.
+DNSSEC never earns credit, given its reliability problems. A zone gets the same grade signed or unsigned, and only loses marks for signing that's broken or weak, since a mistake there takes the whole domain offline.
+
+Signatures are validated here, the way a validating resolver does it, starting from the root zone's published trust anchors, so the result doesn't depend on the resolver in use. Each name server is asked for itself, because one that's stopped getting updates can serve old signatures while the rest are fine. If every server has a problem, validating resolvers will refuse the domain, so that's a failure. If only some do, it's a warning, since a validator can try another. Only the keys and the SOA record are validated in the zone, not every record, and not the proofs that a name doesn't exist. A zone signed with a kind of key Go can't verify, like Ed448, is reported as unchecked, rather than as broken. So is a zone above that can't be checked, for example because the resolver doesn't pass on signatures and the zone above can't be asked instead.
 
 Queries ask a validating resolver for the records even when DNSSEC fails, because otherwise a broken chain looks the same as a server that's down.
 
