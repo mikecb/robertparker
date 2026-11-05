@@ -76,6 +76,7 @@ DMARC (RFC 9989):
 - [x] `sp` and `np` don't weaken the policy for subdomains and non-existent subdomains.
 - [x] Flag test mode (`t=y`), and the removed `pct`, `rf`, and `ri` tags.
 - [x] `rua` reporting is set, and external report destinations authorize it.
+- [ ] Parked domains should have a DMARC policy that denies all sending.
 
 Transport:
 - [ ] MTA-STS: valid TXT record, policy served over HTTPS, and `mode=enforce` (RFC 8461).
