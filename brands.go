@@ -319,6 +319,9 @@ func (m *BrandMatcher) Find(ctx context.Context, source NameSource, rank func(co
 		})
 	}()
 
+	if rank == nil {
+		workers = 1 // There's nothing to do at once, and one keeps a list's matches in order.
+	}
 	var wg sync.WaitGroup
 	for range max(workers, 1) {
 		wg.Add(1)
