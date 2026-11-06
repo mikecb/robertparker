@@ -24,11 +24,13 @@ type dnsServer struct {
 	addr    string
 	answers map[string][]dnsmessage.ResourceBody //By "name type", where name has its final dot.
 	rcode   dnsmessage.RCode                     //Sent for anything not in answers.
+	rcodes  map[string]dnsmessage.RCode          //Sent for these, by "name type", even with answers.
 
-	truncate   bool //Over UDP, say the answer didn't fit.
-	silent     int  //Ignore this many queries.
-	spoof      bool //Over UDP, send a reply with the wrong ID first.
-	wrongQuery bool //Answer a different question.
+	truncate   bool   //Over UDP, say the answer didn't fit.
+	silent     int    //Ignore this many queries.
+	hang       string //Ignore queries for this, by "name type".
+	spoof      bool   //Over UDP, send a reply with the wrong ID first.
+	wrongQuery bool   //Answer a different question.
 
 	authorities      map[string][]dnsmessage.ResourceBody //In the authority section, by "name type".
 	notAuthoritative bool                                 //Don't claim to be an authority.
@@ -141,6 +143,9 @@ func (s *dnsServer) answer(query []byte, udp bool) ([]byte, uint16) {
 		s.silent--
 		return nil, 0
 	}
+	if s.hang == question.Name.String()+" "+question.Type.String() {
+		return nil, 0
+	}
 	reply := dnsmessage.Message{
 		Header: dnsmessage.Header{
 			ID: message.ID, Response: true, RCode: s.rcode,
@@ -167,6 +172,9 @@ func (s *dnsServer) answer(query []byte, udp bool) ([]byte, uint16) {
 				Body:   body,
 			})
 		}
+	}
+	if rcode, ok := s.rcodes[question.Name.String()+" "+question.Type.String()]; ok {
+		reply.RCode = rcode
 	}
 	packed, err := reply.Pack()
 	if err != nil {

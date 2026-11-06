@@ -136,6 +136,7 @@ func (c *dnsChecker) check(ctx context.Context) error {
 		c.checkAddresses(ctx),
 		c.checkMX(ctx),
 		c.checkCAA(ctx),
+		c.checkDangling(ctx),
 		c.checkDNSSEC(ctx, servers),
 		c.checkDirect(ctx, servers), // Last, since a server that doesn't reply is what takes the longest.
 	)

@@ -65,8 +65,8 @@ const (
 	// time waiting behind -rate, so this only catches something stuck. Each lookup has its own short timeout.
 	lookupTimeout = 10 * time.Minute
 
-	// thoroughTimeout is the default for -timeout with -checks dns or tls-probe. With dns, a domain takes about 45 queries,
-	// so with the default -workers and -rate, it can spend 7 seconds of this waiting behind -rate. With tls-probe, a server
+	// thoroughTimeout is the default for -timeout with -checks dns or tls-probe. With dns, a domain takes about 80 queries,
+	// so with the default -workers and -rate, it can spend 13 seconds of this waiting behind -rate. With tls-probe, a server
 	// that doesn't reply to its 10 connections takes 12 seconds. Either way, 10 seconds is too short.
 	thoroughTimeout = 30 * time.Second
 )
